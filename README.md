@@ -5,15 +5,15 @@ mode on the wearer's phone (and, by Apple's own sync, their Watch). See
 [CLAUDE.md](CLAUDE.md) for full project background and scope.
 
 **Status:** phase 1 prototype — manual button press only. Badge firmware
-implements a bonded, button-driven BLE connect/disconnect design (see
-"What it does" below); not yet tested end-to-end with a real Shortcuts
-automation. No battery, no enclosure yet.
+implements a BLE HID keyboard design (see "What it does" below); compiles
+clean, not yet tested end-to-end on real hardware. No battery, no
+enclosure yet.
 
 ## Repo layout
 
 - `firmware/badge/` — Arduino sketch for the XIAO ESP32C6.
-- `scripts/` — Python tooling (BLE scanner for verifying the badge's
-  advertising behavior).
+- `scripts/` — Python tooling (BLE scanner, mainly useful pre-pairing —
+  see `scripts/scan.py`'s docstring).
 - `ios/` — SwiftUI companion app. No longer the trigger mechanism (see
   `docs/ble-protocol.md` for why) — kept as a working foreground
   debug/status tool. See [ios/README.md](ios/README.md).
@@ -31,9 +31,11 @@ automation. No battery, no enclosure yet.
 1. Install the **esp32** board package (Espressif Systems) via
    Boards Manager.
 2. Install the **NimBLE-Arduino** library (by h2zero) via Library Manager.
-3. Select board **XIAO_ESP32C6**, and the correct USB serial port.
-4. Open `firmware/badge/badge.ino` and upload.
-5. Open the Serial Monitor at 115200 baud to see debug output.
+3. Install the **HijelHID_BLEKeyboard** library (by Hijel) via Library
+   Manager.
+4. Select board **XIAO_ESP32C6**, and the correct USB serial port.
+5. Open `firmware/badge/badge.ino` and upload.
+6. Open the Serial Monitor at 115200 baud to see debug output.
 
 Can also be compiled from the command line via `arduino-cli` (already
 configured against the same board/library install as the Arduino IDE on
@@ -59,44 +61,46 @@ pin referenced in code matches the pin printed on the board.
 
 ### What it does
 
-The badge bonds with the phone once (via Settings → Bluetooth), then the
-button drives connect/disconnect: pressing "on" makes the badge
-connectable, which the phone auto-reconnects to (a bonded/trusted
-device); pressing "off" makes the badge actively disconnect. A native
-Shortcuts personal automation reacts to those connect/disconnect events
-to toggle Focus mode — see [docs/ble-protocol.md](docs/ble-protocol.md)
-for the full design and why (this supersedes an earlier broadcast/iBeacon
-approach that didn't work reliably in the background).
+The badge is a BLE HID keyboard (device name `PresenceBadge`), pairs once
+via Settings → Bluetooth, then stays continuously connected — like a real
+Bluetooth keyboard. Each button press sends one keystroke: **F13** for
+"on", **F14** for "off". On the phone, a native OS-level key binding
+(Settings → Accessibility → Full Keyboard Access → Commands) runs the
+corresponding Set Focus shortcut directly — no app, no automation, no
+Bluetooth connect/disconnect toggling. See
+[docs/ble-protocol.md](docs/ble-protocol.md) for the full design and why
+(this supersedes two earlier designs — broadcast/iBeacon, then bonded
+connect/disconnect toggling — that didn't hold up for background/locked
+reliability).
 
-## Pairing and setting up the automations
+## Pairing and setting up the key bindings
 
-1. Flash the badge, press it once ("on") so it's advertising.
+1. Flash the badge, press it once so it starts advertising for pairing.
 2. On the phone: Settings → Bluetooth → tap **PresenceBadge** under Other
    Devices to pair.
-3. In the Shortcuts app: Automation → **+** → **Bluetooth** → select
-   **PresenceBadge** → **Connects** → Run immediately → add action
-   **Run Shortcut** → choose **Badge Focus On** (see
+3. Settings → Accessibility → Keyboards & Typing → Full Keyboard Access →
+   turn it on → **Commands** → find/add a command bound to key **F13** →
+   set it to run the **Badge Focus On** shortcut (see
    [ios/PresenceBadge/Resources/Shortcuts/README.md](ios/PresenceBadge/Resources/Shortcuts/README.md)
    if that shortcut doesn't exist yet).
-4. Repeat for **Disconnects** → **Badge Focus Off**.
+4. Repeat for **F14** → **Badge Focus Off**.
+5. Turn on **Allow Running While Locked** for both shortcuts (Shortcuts
+   app → shortcut → (i) info icon).
 
 ## Verifying the badge's advertising with the scanner script
 
-Before involving the phone at all, confirm the badge broadcasts when
-expected:
+Before pairing, confirm the badge broadcasts when expected:
 
 ```sh
 uv sync
 uv run scripts/scan.py
 ```
 
-Jumper D0 to GND (see "Temporary input" above) — you should see "Badge
-advertising (wants to connect)" appear. Press again — since it's not
-bonded to this laptop, it'll just keep advertising (a real phone would
-connect and it'd disappear from the scan).
+Power the badge — you should see "Badge advertising (wants to connect)"
+appear before it's paired with anything.
 
 ## Not built yet
 
-Battery/power management, enclosure, GATT service, multi-device pairing,
-proximity-based (phase 2) triggering, real end-to-end validation of the
-Bluetooth-automation design against actual hardware.
+Battery/power management, enclosure, multi-device pairing, proximity-based
+(phase 2) triggering, real end-to-end validation of the HID-keyboard
+design against actual hardware.

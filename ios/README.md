@@ -1,14 +1,18 @@
 # Presence Badge companion app (iOS)
 
-**No longer the trigger mechanism** — the badge now uses a bonded BLE
-connect/disconnect design driven by a native Shortcuts automation instead
-(see [../docs/ble-protocol.md](../docs/ble-protocol.md) for why: this
-app's iBeacon/CoreLocation-based background detection didn't work
-reliably in practice despite correct setup, and hit a hard OS wall even
-when it did fire — a backgrounded app can't open another app via URL at
-all). Kept in the repo as a working foreground debug/status tool and a
-foundation for future customization, not as something you need to install
-for the badge to work day-to-day.
+**No longer the trigger mechanism** — the badge is now a BLE HID keyboard,
+triggered by a native OS-level key binding (Full Keyboard Access), no
+app or automation involved at all. See
+[../docs/ble-protocol.md](../docs/ble-protocol.md) for the full history:
+this app's iBeacon/CoreLocation-based background detection didn't work
+reliably in practice (and hit a hard OS wall even when it did fire — a
+backgrounded app can't open another app via URL at all), and a follow-up
+bonded-connect/disconnect design also didn't pan out (regular BLE
+peripherals don't get iOS's app-free auto-reconnect treatment, only
+recognized classes like HID do — which is exactly why the current design
+uses real HID). Kept in the repo as a working foreground debug/status
+tool and a foundation for future customization, not as something you
+need to install for the badge to work day-to-day.
 
 Minimal SwiftUI app that watches for the badge's iBeacon identity and
 toggles Focus mode via a pre-built Shortcut, while in the foreground.

@@ -1,10 +1,11 @@
 """Laptop-side verification tool for the Bedside Focus Badge.
 
-The badge only advertises while it wants to be connected (button pressed
-"on" and not yet connected to the phone) -- see docs/ble-protocol.md. This
-prints when that advertisement appears/disappears, as a way to confirm
-the badge is broadcasting correctly before involving the phone at all. It
-can't observe the phone's actual connection state.
+The badge is a BLE HID keyboard that stays continuously connected to the
+phone once paired -- see docs/ble-protocol.md. It only advertises while
+unpaired/disconnected (e.g. fresh out of setup, or if the phone is out of
+range), so this is mainly useful as a pre-pairing sanity check that the
+badge is alive and broadcasting -- not an ongoing state monitor, since
+there's no state payload once it's paired and connected to the phone.
 
 Usage:
     uv run scripts/scan.py

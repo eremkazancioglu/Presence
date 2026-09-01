@@ -1,22 +1,28 @@
 // Bedside Focus Badge — phase 1 firmware
 //
-// Reads a momentary push button. The button drives BLE connect/disconnect
-// against a bonded phone: pressing "on" starts (and keeps) connectable
-// advertising so the phone's bonded auto-reconnect completes a
-// connection; pressing "off" actively disconnects. A native Shortcuts
-// personal automation ("When Bluetooth device connects/disconnects")
-// reacts to those two events to toggle Focus mode on the phone.
+// Reads a momentary push button. The badge is a BLE HID keyboard (via the
+// HijelHID_BLEKeyboard library), staying continuously connected once
+// paired -- like a real Bluetooth keyboard, not toggling connect/
+// disconnect per press. Each press sends one distinct keystroke: F13 for
+// "on", F14 for "off". On the phone, Settings -> Accessibility ->
+// Keyboards & Typing -> Full Keyboard Access -> Commands binds each key to
+// a Shortcut (Badge Focus On / Badge Focus Off) natively, with no app
+// needed at all -- this fires reliably even while the phone is locked
+// (verified empirically with a real Bluetooth accessory before committing
+// to this design).
 //
-// This supersedes an earlier broadcast-only/iBeacon design -- background
-// detection via CoreLocation (region monitoring, then CLMonitor) didn't
-// work reliably in practice despite correct setup. See CLAUDE.md's
-// Architecture decisions for the full investigation and why a system-level
-// Bluetooth connection (this design) sidesteps that problem entirely.
+// This supersedes two earlier designs: broadcast-only/iBeacon (background
+// detection via CoreLocation didn't work reliably), and bonded connect/
+// disconnect toggling (regular BLE peripherals don't get iOS's app-free
+// auto-reconnect treatment -- only recognized classes like HID and audio
+// devices do, which is exactly why this design uses real HID). See
+// CLAUDE.md's Architecture decisions for the full investigation.
 //
 // Board: Seeed Studio XIAO ESP32C6
-// Library: NimBLE-Arduino (h2zero) — install via Arduino Library Manager.
+// Libraries: NimBLE-Arduino (h2zero), HijelHID_BLEKeyboard (Hijel) —
+// both via Arduino Library Manager.
 
-#include <NimBLEDevice.h>
+#include <HijelHID_BLEKeyboard.h>
 
 // TEMP: no external tactile button wired yet. Until it arrives, jumper a
 // wire from the header pin labeled "D0" to a GND pin to simulate a press
@@ -28,18 +34,8 @@
 #define BUTTON_PIN D0
 
 #define DEBOUNCE_MS 50
-#define DEVICE_NAME "PresenceBadge"
 
-// EXPERIMENTAL: plain custom BLE peripherals generally don't appear in
-// iOS Settings -> Bluetooth at all, which blocks pairing (and therefore
-// the Shortcuts Bluetooth automation). Testing whether advertising a
-// standard "adopted" GATT service (Heart Rate) makes it show up --
-// AccessorySetupKit (the properly-sanctioned fix) turned out to need an
-// Apple-approved managed entitlement, not available for this prototype.
-// See CLAUDE.md. Remove this block if it doesn't work or if a better
-// answer is found.
-#define HEART_RATE_SERVICE_UUID (uint16_t)0x180D
-#define HEART_RATE_MEASUREMENT_UUID (uint16_t)0x2A37
+HijelHID_BLEKeyboard keyboard("PresenceBadge", "Presence", 100);
 
 bool focusActive = false;
 
@@ -47,75 +43,25 @@ int lastReading = HIGH;
 int debouncedState = HIGH;
 unsigned long lastDebounceTime = 0;
 
-NimBLEServer* server;
-NimBLEAdvertising* advertising;
-
-void disconnectAllPeers() {
-  for (uint16_t connHandle : server->getPeerDevices()) {
-    server->disconnect(connHandle);
-  }
-}
-
-class BadgeServerCallbacks : public NimBLEServerCallbacks {
-    void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
-      Serial.println("Connected");
-    }
-
-    void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override {
-      Serial.printf("Disconnected (reason %d)\n", reason);
-      // Only resume advertising if we're still meant to be ON -- an OFF
-      // press already stopped advertising directly, so this path only
-      // fires for an unintended drop (interference, brief range loss)
-      // while ON, letting it self-heal via bonded auto-reconnect without
-      // another button press.
-      if (focusActive) {
-        advertising->start();
-      }
-    }
-};
-
 void toggleFocus() {
-  focusActive = !focusActive;
-  Serial.printf("Focus %s\n", focusActive ? "ON" : "OFF");
-
-  if (focusActive) {
-    advertising->start();
-  } else {
-    disconnectAllPeers();
-    advertising->stop();
+  if (!keyboard.isPaired()) {
+    Serial.println("Not paired yet -- ignoring press. Pair in Settings > Bluetooth first.");
+    return;
   }
+
+  focusActive = !focusActive;
+  Serial.printf("Focus %s -- sending %s\n", focusActive ? "ON" : "OFF", focusActive ? "F13" : "F14");
+  keyboard.tap(focusActive ? KEY_F13 : KEY_F14);
 }
 
 void setup() {
   Serial.begin(115200);
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
-  NimBLEDevice::init(DEVICE_NAME);
-  // Bonding, no MITM (no display/keypad on the badge to confirm a
-  // passkey -- "Just Works" pairing), LE Secure Connections.
-  NimBLEDevice::setSecurityAuth(true, false, true);
+  keyboard.setLogLevel(HIDLogLevel::Normal);
+  keyboard.begin();
 
-  server = NimBLEDevice::createServer();
-  server->setCallbacks(new BadgeServerCallbacks());
-  // We manage advertising restart ourselves (see onDisconnect) based on
-  // whether the badge is still meant to be ON, rather than NimBLE's
-  // blanket auto-resume, which can't distinguish a deliberate OFF-press
-  // disconnect from an unintended drop.
-  server->advertiseOnDisconnect(false);
-
-  NimBLEService* heartRateService = server->createService(NimBLEUUID(HEART_RATE_SERVICE_UUID));
-  heartRateService->createCharacteristic(NimBLEUUID(HEART_RATE_MEASUREMENT_UUID), NIMBLE_PROPERTY::NOTIFY);
-  heartRateService->start();
-
-  server->start();
-
-  advertising = NimBLEDevice::getAdvertising();
-  NimBLEAdvertisementData advData;
-  advData.setName(DEVICE_NAME);
-  advData.setCompleteServices(NimBLEUUID(HEART_RATE_SERVICE_UUID));
-  advertising->setAdvertisementData(advData);
-
-  Serial.println("Badge ready, OFF (not advertising).");
+  Serial.println("Badge ready. Pair via Settings > Bluetooth, then press to send F13/F14.");
 }
 
 void loop() {

@@ -32,25 +32,22 @@ simple and don't over-build for anticipated future requirements.
 - Hardware ordered: Seeed Studio XIAO ESP32C6 (pre-soldered), tactile
   push buttons, mini breadboards (170-point), jumper wire kit (M-M and M-F).
   Tactile button itself hasn't arrived yet.
-- Firmware written and verified working end-to-end: button press (via a
-  temporary D0-to-GND jumper, standing in for the tactile button) toggles
-  state and broadcasts it over BLE; confirmed received by
-  `scripts/scan.py` on a laptop. See `firmware/badge/badge.ino` and
-  `docs/ble-protocol.md`.
+- Firmware has gone through three designs (broadcast/iBeacon -> bonded
+  connect/disconnect -> current: BLE HID keyboard) chasing reliable
+  background/locked-phone behavior — full history in Architecture
+  decisions below. **Current firmware (BLE HID keyboard, F13/F14
+  keystrokes) compiles clean via `arduino-cli` but is not yet tested
+  end-to-end on real hardware** — that's the immediate next step, not
+  writing more code.
 - **Gotcha:** on the XIAO ESP32C6, silkscreen pin labels don't map 1:1 to
   raw GPIO numbers in Arduino code (e.g. label `D9` is actually GPIO20,
   not GPIO9). Always reference pins via the `D#` macros in code, not raw
   GPIO numbers, so the pin in code matches the pin printed on the board.
 - iOS companion app (`ios/`, SwiftUI + xcodegen) builds and runs on real
-  hardware; foreground behavior (badge -> app -> Set Focus shortcut ->
-  Do Not Disturb) verified working. Background/locked-phone behavior was
-  investigated extensively (iBeacon + CoreLocation region monitoring, then
-  the newer `CLMonitor` API) and neither delivered background events
-  reliably in practice — see Architecture decisions below. Current plan
-  has moved to a native Shortcuts Bluetooth connect/disconnect automation
-  instead; **firmware needs to change to a bonded/connectable design**
-  (not yet done) and the two Shortcuts need to be rebuilt around that
-  trigger instead of the app's URL-scheme invocation.
+  hardware; its own foreground behavior (badge -> app -> Set Focus
+  shortcut -> Do Not Disturb) was verified working under the first
+  (now-superseded) iBeacon design. No longer the trigger mechanism — see
+  Architecture decisions below — kept as a foreground debug tool.
 - This is a personal side project, prototyping only — no hospital
   partnership or funding in place yet.
 
@@ -69,29 +66,44 @@ simple and don't over-build for anticipated future requirements.
 
 ## Architecture decisions made so far
 
-- **Pair once, then let the button drive connect/disconnect.** (Supersedes
-  the original "broadcast, not pair" plan below.) The badge bonds with the
-  phone once during setup. Between presses it stays non-connectable/idle
-  — nothing for iOS to auto-reconnect to. Pressing "on" starts (and keeps)
-  connectable advertising, so iOS's bonded auto-reconnect completes the
-  connection; pressing "off" makes the badge *actively* disconnect (not
-  just stop advertising — once connected it isn't advertising anyway, so
-  merely stopping advertising wouldn't drop a live connection). A native
-  Shortcuts personal automation ("When Bluetooth device connects/
-  disconnects") drives Focus on/off from those two events. Because the
-  badge stays advertising-connectable for the *entire* ON duration (not
-  just at the press), an accidental mid-visit drop (RF interference, brief
-  range loss) self-heals via auto-reconnect without another button press
-  — shows up as a brief disconnect-then-reconnect flicker, not a silent
-  stuck-off failure. This is a system-level Bluetooth connection (like
-  AirPods/Watch), not one our own app manages, so it isn't subject to the
-  app-background-suspension problems below.
-  - *Original plan, superseded:* continuous BLE broadcast on button press
-    (custom UUID/payload), no pairing at all — any number of listening
-    devices react to the same broadcast independently, phone-side
-    automation reacts to the advertisement. Simpler and worked fine in the
-    foreground, but see the background-reliability investigation below for
-    why it didn't hold up for the badge's actual purpose.
+- **Badge is a BLE HID keyboard; the trigger is a native OS-level key
+  binding, not a Shortcuts automation or an app.** (Third and current
+  design — supersedes both "broadcast, not pair" and "bonded connect/
+  disconnect" below.) Built with the `HijelHID_BLEKeyboard` Arduino
+  library. Pairs once via Settings → Bluetooth, then stays continuously
+  connected like a real Bluetooth keyboard (no per-press
+  connect/disconnect toggling). Each press sends a distinct keystroke —
+  F13 for "on", F14 for "off" (otherwise-unused function keys, won't
+  collide with typing). On the phone: Settings → Accessibility →
+  Keyboards & Typing → Full Keyboard Access → Commands binds each key
+  directly to a Shortcut. Confirmed empirically (with a real Bluetooth
+  accessory, before committing to this design) that this fires reliably
+  even while the phone is locked, and — critically, unlike the two
+  earlier designs — iOS auto-reconnects HID-classified devices at the
+  system level without any app running, which is documented behavior
+  (unlike for generic BLE peripherals, see below), so the connection
+  itself should stay reliable too.
+  - *Second design, superseded:* bonded BLE connect/disconnect, reacted
+    to by a native Shortcuts "When Bluetooth device connects/disconnects"
+    automation. The automation-fires-while-locked part worked (verified
+    empirically), but two problems killed it: (1) a plain custom BLE
+    peripheral doesn't appear in Settings → Bluetooth at all, so there's
+    nothing to pair — worked around by masquerading as a Heart Rate
+    device (an "adopted" GATT service iOS does list), since the properly-
+    sanctioned fix, Apple's `AccessorySetupKit`, needs an entitlement
+    Apple has to approve and isn't available for this prototype; and (2)
+    even once paired that way, iOS doesn't auto-reconnect a generic BLE
+    peripheral without an app actively driving it — only specific
+    recognized classes (HID, audio devices) get app-free auto-reconnect,
+    which is exactly why the current design uses real HID instead of
+    continuing to fight this.
+  - *Original design, superseded:* continuous BLE broadcast on button
+    press (custom UUID/payload), no pairing at all — any number of
+    listening devices react to the same broadcast independently,
+    phone-side automation reacts to the advertisement. Simpler and worked
+    fine in the foreground, but see the background-reliability
+    investigation below for why it didn't hold up for the badge's actual
+    purpose.
 - **Why not a custom iOS app watching BLE/iBeacon advertisements
   (tried and abandoned):** built a full custom SwiftUI app using iBeacon
   advertising (UUID/Major/Minor, switched to from a custom manufacturer-data
@@ -114,14 +126,15 @@ simple and don't over-build for anticipated future requirements.
   going forward. Detailed history is in this project's conversation log if
   ever revisited.
 - **iOS Focus toggling still goes through a pre-built Shortcut, not a
-  direct API call.** No public iOS API lets a third-party app or an
-  automation toggle Focus mode directly — only Shortcuts' own "Set Focus"
-  action can. The two shortcuts (`Badge Focus On` / `Badge Focus Off`,
-  each just a Set Focus action targeting Do Not Disturb) are hand-built
-  once in the Shortcuts app — `.shortcut` files are a signed binary format
-  that can't be generated programmatically. With the connect/disconnect
-  pivot, these are now triggered by native Shortcuts personal automations
-  rather than the custom app's `x-callback-url` invocation.
+  direct API call.** No public iOS API lets a third-party app, automation,
+  or key binding toggle Focus mode directly — only Shortcuts' own "Set
+  Focus" action can. The two shortcuts (`Badge Focus On` / `Badge Focus
+  Off`, each just a Set Focus action targeting Do Not Disturb) are
+  hand-built once in the Shortcuts app — `.shortcut` files are a signed
+  binary format that can't be generated programmatically. **Both need
+  "Allow Running While Locked" turned on** (per-shortcut setting, in the
+  shortcut's own (i) info screen) for the F13/F14 key bindings to work
+  while the phone is locked.
 - **Do Not Disturb only for now, not a custom Focus mode.** Simpler scope;
   a custom Focus mode would need to exist identically on every user's
   phone for a bundled shortcut to work for them, and there's no API to
@@ -144,27 +157,23 @@ simple and don't over-build for anticipated future requirements.
 
 ## Open questions / not yet decided
 
-- Advertising-only vs. GATT service (advertising-only is the current
-  plan for simplicity; revisit if two-way communication, e.g. battery
-  status or ack, becomes necessary).
-- ~~Exact BLE payload/UUID scheme~~ — decided: iBeacon format, see
-  Architecture decisions above and `docs/ble-protocol.md`.
+- ~~Advertising-only vs. GATT service~~ — moot under the current HID
+  design (a GATT-based HID service is required for HID itself); revisit
+  if a *further* custom service (e.g. battery status/ack) becomes useful.
+- ~~Exact BLE payload/UUID scheme~~ — superseded: no longer a broadcast
+  payload at all under the current HID design. See `docs/ble-protocol.md`.
 - ~~Whether to build a real companion app or rely on Shortcuts/Tasker
-  indefinitely~~ — revisited twice. First decided in favor of a real
-  companion app (`ios/`) using iBeacon + CoreLocation, on the theory that
-  a generic Shortcuts trigger (e.g. Pushcut's iBeacon feature) couldn't
-  provide precise/reliable enough background reaction. That app's own
-  background mechanism then turned out not to work reliably in practice
-  (see Architecture decisions above) — so the current plan is a *native*
-  Shortcuts automation (Bluetooth connect/disconnect), not a third-party
-  app or a custom app, for the actual trigger. The custom app remains in
-  the repo as a working foreground tool/foundation, not abandoned, just
-  not load-bearing for phase 1 anymore.
-- Per-badge unique identity (UUID/Major) — not needed while only one badge
-  exists; the RSSI proximity filter is a stand-in, but doesn't distinguish
-  "my badge" from "a colleague's badge nearby," and background events have
-  no RSSI at all to filter on. Needs real per-badge IDs once more than one
-  badge is in use.
+  indefinitely~~ — revisited three times, landed on neither: the final
+  answer is a native OS-level key binding (Full Keyboard Access), not an
+  app, a third-party Shortcuts trigger app, or even a Shortcuts
+  automation. See Architecture decisions above for the full path there.
+  The custom app remains in the repo as a working foreground
+  tool/foundation, not abandoned, just not load-bearing for phase 1.
+- Per-badge unique identity — not needed while only one badge exists.
+  Under the current HID design this would mean a distinct
+  name/keystroke-pair per badge, and each wearer's Full Keyboard Access
+  bindings pointing at their own badge's keys specifically. Needs real
+  design once more than one badge is in use.
 - Android version — DND can be toggled via a direct public API
   (`NotificationManager.setInterruptionFilter` + one-time "Notification
   Policy Access" permission), no Shortcuts-style indirection needed. Real
