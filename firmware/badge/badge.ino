@@ -64,9 +64,17 @@ void setup() {
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
   keyboard.setLogLevel(HIDLogLevel::Normal);
+  // Default 25ms press/release timing is far shorter than the connection
+  // can actually flush while coming out of idle/slave-latency power
+  // saving (~625ms cycle, logged as "~1.6Hz effective") -- the press
+  // report gets silently overwritten by the release before it's ever
+  // transmitted, so the very first press after inactivity does nothing
+  // even though it looks like it should have worked. Holding well past
+  // that window guarantees the host actually sees the press.
+  keyboard.setTapDelay(900);
   keyboard.begin();
 
-  Serial.println("Badge ready. Pair via Settings > Bluetooth, then press to send F13/F14.");
+  Serial.println("Badge ready. Pair via Settings > Bluetooth, then press to toggle focus.");
 }
 
 void loop() {
