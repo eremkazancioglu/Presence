@@ -33,7 +33,7 @@ final class BeaconMonitor: NSObject, ObservableObject {
 
     private static let onIdentifier = "BadgeFocusOn"
     private static let offIdentifier = "BadgeFocusOff"
-    private static let monitorName = "com.eremkazancioglu.PresenceBadge.monitor"
+    private static let monitorName = "PresenceBadgeMonitor"
 
     /// Minimum RSSI to act on a *foreground* sighting — see the class-level
     /// note above on why this can't apply to background events.
