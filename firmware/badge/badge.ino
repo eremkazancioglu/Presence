@@ -30,6 +30,17 @@
 #define DEBOUNCE_MS 50
 #define DEVICE_NAME "PresenceBadge"
 
+// EXPERIMENTAL: plain custom BLE peripherals generally don't appear in
+// iOS Settings -> Bluetooth at all, which blocks pairing (and therefore
+// the Shortcuts Bluetooth automation). Testing whether advertising a
+// standard "adopted" GATT service (Heart Rate) makes it show up --
+// AccessorySetupKit (the properly-sanctioned fix) turned out to need an
+// Apple-approved managed entitlement, not available for this prototype.
+// See CLAUDE.md. Remove this block if it doesn't work or if a better
+// answer is found.
+#define HEART_RATE_SERVICE_UUID (uint16_t)0x180D
+#define HEART_RATE_MEASUREMENT_UUID (uint16_t)0x2A37
+
 bool focusActive = false;
 
 int lastReading = HIGH;
@@ -91,11 +102,17 @@ void setup() {
   // blanket auto-resume, which can't distinguish a deliberate OFF-press
   // disconnect from an unintended drop.
   server->advertiseOnDisconnect(false);
+
+  NimBLEService* heartRateService = server->createService(NimBLEUUID(HEART_RATE_SERVICE_UUID));
+  heartRateService->createCharacteristic(NimBLEUUID(HEART_RATE_MEASUREMENT_UUID), NIMBLE_PROPERTY::NOTIFY);
+  heartRateService->start();
+
   server->start();
 
   advertising = NimBLEDevice::getAdvertising();
   NimBLEAdvertisementData advData;
   advData.setName(DEVICE_NAME);
+  advData.setCompleteServices(NimBLEUUID(HEART_RATE_SERVICE_UUID));
   advertising->setAdvertisementData(advData);
 
   Serial.println("Badge ready, OFF (not advertising).");
