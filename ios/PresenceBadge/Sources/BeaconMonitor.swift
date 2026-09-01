@@ -47,6 +47,7 @@ final class BeaconMonitor: NSObject, ObservableObject {
         locationManager.delegate = self
         authorizationStatus = locationManager.authorizationStatus
         accuracyAuthorization = locationManager.accuracyAuthorization
+        print("[BeaconMonitor] init: auth=\(authorizationStatus.rawValue) accuracy=\(accuracyAuthorization == .fullAccuracy ? "full" : "reduced") rangingAvailable=\(CLLocationManager.isRangingAvailable()) monitoringAvailable=\(CLLocationManager.isMonitoringAvailable(for: CLBeaconRegion.self))")
     }
 
     func requestAuthorizationAndStartMonitoring() {
@@ -79,6 +80,7 @@ final class BeaconMonitor: NSObject, ObservableObject {
     /// proximity filter and the status UI, but only makes sense to run
     /// while foregrounded.
     func startForegroundRanging() {
+        print("[BeaconMonitor] startForegroundRanging called")
         locationManager.startRangingBeacons(satisfying: Self.onConstraint)
         locationManager.startRangingBeacons(satisfying: Self.offConstraint)
         isRanging = true
@@ -116,6 +118,7 @@ extension BeaconMonitor: CLLocationManagerDelegate {
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         authorizationStatus = manager.authorizationStatus
         accuracyAuthorization = manager.accuracyAuthorization
+        print("[BeaconMonitor] didChangeAuthorization: auth=\(authorizationStatus.rawValue) accuracy=\(accuracyAuthorization == .fullAccuracy ? "full" : "reduced")")
         if authorizationStatus == .authorizedAlways || authorizationStatus == .authorizedWhenInUse {
             requestFullAccuracyIfNeeded()
             startMonitoring()
@@ -130,11 +133,13 @@ extension BeaconMonitor: CLLocationManagerDelegate {
     }
 
     func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
+        print("[BeaconMonitor] didEnterRegion: \(region.identifier)")
         guard let beaconRegion = region as? CLBeaconRegion else { return }
         apply(state: beaconRegion.identifier == "BadgeFocusOn", rssi: nil)
     }
 
     func locationManager(_ manager: CLLocationManager, didDetermineState state: CLRegionState, for region: CLRegion) {
+        print("[BeaconMonitor] didDetermineState: \(region.identifier) state=\(state.rawValue)")
         guard state == .inside, let beaconRegion = region as? CLBeaconRegion else { return }
         apply(state: beaconRegion.identifier == "BadgeFocusOn", rssi: nil)
     }
@@ -144,8 +149,25 @@ extension BeaconMonitor: CLLocationManagerDelegate {
         didRange beacons: [CLBeacon],
         satisfying constraint: CLBeaconIdentityConstraint
     ) {
+        print("[BeaconMonitor] didRange: \(beacons.count) beacon(s) for minor=\(constraint.minor?.description ?? "any")")
         guard let beacon = beacons.first, beacon.rssi != 0 else { return }
         let state = constraint.minor == Self.minorOn
         apply(state: state, rssi: beacon.rssi)
+    }
+
+    func locationManager(
+        _ manager: CLLocationManager,
+        didFailRangingFor constraint: CLBeaconIdentityConstraint,
+        error: Error
+    ) {
+        print("[BeaconMonitor] didFailRangingFor minor=\(constraint.minor?.description ?? "any"): \(error)")
+    }
+
+    func locationManager(_ manager: CLLocationManager, monitoringDidFailFor region: CLRegion?, withError error: Error) {
+        print("[BeaconMonitor] monitoringDidFailFor \(region?.identifier ?? "?"): \(error)")
+    }
+
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        print("[BeaconMonitor] didFailWithError: \(error)")
     }
 }
