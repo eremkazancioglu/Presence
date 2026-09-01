@@ -1,62 +1,56 @@
-# BLE advertising protocol (phase 1)
+# BLE connection protocol (phase 1)
 
-The badge advertises as a standard **iBeacon** — not a custom manufacturer
-data scheme (see "Why iBeacon, not custom manufacturer data" below).
+The badge is a bonded, connectable BLE peripheral (device name
+`PresenceBadge`) — not a broadcast-only beacon. The button drives
+connect/disconnect against the phone it's bonded to; there's no
+advertised state payload to parse.
 
-## Advertisement contents
+## How it works
 
-- **UUID:** `651BBFEC-F197-444E-BF25-D72C1D4CCD84` — fixed, identifies this
-  badge design. (If more badges are built later, this is the natural
-  per-badge identity field — see CLAUDE.md's open questions.)
-- **Major:** `1` — fixed for now, unused, reserved for future
-  differentiation (e.g. hardware revision).
-- **Minor:** the on/off state.
-  - `0` = focus OFF
-  - `1` = focus ON
-- **Tx power byte:** `0xC5` (-59 dBm), the standard iBeacon calibration
-  reference value — not calibrated against this specific badge, fine for
-  our purposes since we don't rely on iBeacon's distance estimate.
+- **Bonding:** happens once, when the phone first pairs with the badge in
+  Settings → Bluetooth. Uses "Just Works" pairing (bonding on, no MITM
+  passkey — the badge has no display/keypad to show one) with LE Secure
+  Connections.
+- **Button press "on":** the badge starts (and keeps) connectable
+  advertising. Since the phone already trusts this bonded device, iOS
+  auto-reconnects as soon as it sees the advertisement — that reconnection
+  is the "device connects" event.
+- **Button press "off":** the badge actively disconnects (a live
+  connection isn't advertising anyway, so merely stopping advertising
+  wouldn't drop it) and stops advertising, so nothing reconnects until the
+  next "on" press.
+- **Self-healing mid-visit drops:** the badge stays advertising-connectable
+  for the *entire* ON duration, not just at the moment of the press. If
+  the connection drops unexpectedly (RF interference, brief range loss),
+  iOS's bonded auto-reconnect completes again on its own — no extra button
+  press needed. This shows up as a brief disconnect-then-reconnect
+  flicker, not a silent stuck-off failure.
 
-The device also advertises the name `PresenceBadge` in the scan response
-packet (not the main advertisement — the iBeacon payload alone fills
-nearly the whole 31-byte legacy advertising packet), for human-readable
-identification when scanning with any BLE tool.
+## Phone-side trigger
 
-Toggling: press the button, badge switches its advertised Minor value
-between 0 and 1. The iOS app doesn't read this as a single "state changed"
-event — it treats "beacon `...4C84`/Major 1/Minor 1 is present" as ON and
-"Minor 0 is present" as OFF, and reacts to the region transition.
+A native Shortcuts personal automation, not a custom app:
+**Automation → When Bluetooth device "PresenceBadge" connects → Run
+immediately → [Badge Focus On shortcut]**, and the mirror image for
+disconnects → Focus Off. See `ios/README.md`.
 
-## Why iBeacon, not custom manufacturer data
+## Why not a broadcast/iBeacon payload (superseded design)
 
-The original design used a custom manufacturer data payload (company ID
-`0xFFFF` + 2 bespoke bytes). That worked for foreground scanning but has no
-reliable way to wake or notify the iOS app while it's backgrounded or the
-phone is locked — iOS throttles raw CoreBluetooth background scanning
-heavily (roughly one discovery callback per peripheral per scan cycle,
-scan cycles slowed "dramatically"), with no guarantee a given advertisement
-is ever seen.
-
-iBeacon format is recognized by CoreLocation's **region monitoring**
-(`CLBeaconRegion`), which iOS built specifically to reliably wake an app in
-the background — even from a fully terminated state — when a beacon
-identity appears/disappears. Not literally instant (real-world reports:
-low tens of seconds) and not 100% guaranteed (rare relaunch-failure edge
-cases are documented), but meaningfully more reliable than raw background
-BLE scanning. Given the whole point of this badge is working while the
-phone is locked/pocketed, that reliability matters more than instant
-foreground latency.
-
-Using region monitoring for a button-triggered signal (rather than actual
-physical proximity) works because the badge is worn at an effectively
-fixed, close distance from the phone at all times — what changes is *which
-Minor value* the badge broadcasts (driven by the button), not the physical
-distance. Region monitoring here is a delivery mechanism for a
-button-driven state signal, not a proximity trigger.
+Earlier phase 1 firmware broadcast a custom manufacturer-data payload,
+then switched to standard iBeacon format specifically to use iOS's
+CoreLocation region monitoring / `CLMonitor` for reliable background
+detection. Neither actually delivered background events reliably in
+practice on real hardware, despite correct setup (see CLAUDE.md's
+Architecture decisions for the full investigation). A system-level
+Bluetooth connection (this design) is managed by iOS itself, the same way
+AirPods or an Apple Watch stay connected, and isn't subject to the
+custom-app background-suspension problems that broke the earlier
+approach.
 
 ## Not decided yet / revisit later
 
-- Whether a real GATT service becomes necessary (e.g. battery level, ack).
-  Not in scope for phase 1.
-- Per-badge unique UUID/Major, once more than one badge exists (see
+- Whether a GATT service becomes useful for something beyond bare
+  connect/disconnect (e.g. battery level). Not needed for phase 1 — the
+  badge advertises no custom service, just the default Generic
+  Access/Attribute services NimBLE provides.
+- Per-badge unique identity, once more than one badge exists (see
   CLAUDE.md).

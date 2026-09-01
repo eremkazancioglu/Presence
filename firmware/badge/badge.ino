@@ -1,17 +1,22 @@
 // Bedside Focus Badge — phase 1 firmware
 //
-// Reads a momentary push button. Each press toggles an on/off state and
-// updates a continuous BLE advertisement reflecting that state, in
-// standard iBeacon format so iOS can reliably react to it even while
-// backgrounded/locked via CoreLocation region monitoring — see
-// docs/ble-protocol.md for why iBeacon rather than custom manufacturer
-// data, and the exact payload layout. No pairing, no GATT service.
+// Reads a momentary push button. The button drives BLE connect/disconnect
+// against a bonded phone: pressing "on" starts (and keeps) connectable
+// advertising so the phone's bonded auto-reconnect completes a
+// connection; pressing "off" actively disconnects. A native Shortcuts
+// personal automation ("When Bluetooth device connects/disconnects")
+// reacts to those two events to toggle Focus mode on the phone.
+//
+// This supersedes an earlier broadcast-only/iBeacon design -- background
+// detection via CoreLocation (region monitoring, then CLMonitor) didn't
+// work reliably in practice despite correct setup. See CLAUDE.md's
+// Architecture decisions for the full investigation and why a system-level
+// Bluetooth connection (this design) sidesteps that problem entirely.
 //
 // Board: Seeed Studio XIAO ESP32C6
 // Library: NimBLE-Arduino (h2zero) — install via Arduino Library Manager.
 
 #include <NimBLEDevice.h>
-#include <NimBLEBeacon.h>
 
 // TEMP: no external tactile button wired yet. Until it arrives, jumper a
 // wire from the header pin labeled "D0" to a GND pin to simulate a press
@@ -23,15 +28,7 @@
 #define BUTTON_PIN D0
 
 #define DEBOUNCE_MS 50
-
 #define DEVICE_NAME "PresenceBadge"
-
-// iBeacon fields — see docs/ble-protocol.md.
-#define BEACON_UUID "651bbfec-f197-444e-bf25-d72c1d4ccd84"
-#define BEACON_MAJOR 1
-#define BEACON_MINOR_OFF 0
-#define BEACON_MINOR_ON 1
-#define BEACON_TX_POWER (-59) // standard iBeacon calibration reference
 
 bool focusActive = false;
 
@@ -39,44 +36,43 @@ int lastReading = HIGH;
 int debouncedState = HIGH;
 unsigned long lastDebounceTime = 0;
 
-NimBLEAdvertising *advertising;
+NimBLEServer* server;
+NimBLEAdvertising* advertising;
 
-void updateAdvertisement() {
-  NimBLEBeacon beacon;
-  // NimBLEBeacon::setManufacturerId() internally byte-swaps its input --
-  // correct for Major/Minor (which need big-endian per the iBeacon spec)
-  // but wrong for the company ID (which needs little-endian). Passing the
-  // pre-swapped 0x4C00 compensates so the real Apple ID 0x004C ends up on
-  // the wire. Verified against a raw packet capture -- without this, the
-  // badge broadcasts company ID 0x4C00 instead of 0x004C, which neither
-  // scan.py nor iOS's CoreLocation recognize as a valid iBeacon.
-  beacon.setManufacturerId(0x4C00);
-  beacon.setProximityUUID(NimBLEUUID(BEACON_UUID));
-  beacon.setMajor(BEACON_MAJOR);
-  beacon.setMinor(focusActive ? BEACON_MINOR_ON : BEACON_MINOR_OFF);
-  beacon.setSignalPower(BEACON_TX_POWER);
-
-  NimBLEAdvertisementData advData;
-  advData.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
-  advData.setManufacturerData(beacon.getData());
-
-  // Name goes in the scan response, not the main advertisement — the
-  // iBeacon payload alone nearly fills the 31-byte legacy advertising
-  // packet. Purely for human-readable identification when debugging with
-  // a generic BLE scanner; CoreLocation matches on UUID/Major/Minor only.
-  NimBLEAdvertisementData scanResponseData;
-  scanResponseData.setName(DEVICE_NAME);
-
-  advertising->stop();
-  advertising->setAdvertisementData(advData);
-  advertising->setScanResponseData(scanResponseData);
-  advertising->start();
+void disconnectAllPeers() {
+  for (uint16_t connHandle : server->getPeerDevices()) {
+    server->disconnect(connHandle);
+  }
 }
+
+class BadgeServerCallbacks : public NimBLEServerCallbacks {
+    void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
+      Serial.println("Connected");
+    }
+
+    void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override {
+      Serial.printf("Disconnected (reason %d)\n", reason);
+      // Only resume advertising if we're still meant to be ON -- an OFF
+      // press already stopped advertising directly, so this path only
+      // fires for an unintended drop (interference, brief range loss)
+      // while ON, letting it self-heal via bonded auto-reconnect without
+      // another button press.
+      if (focusActive) {
+        advertising->start();
+      }
+    }
+};
 
 void toggleFocus() {
   focusActive = !focusActive;
-  Serial.printf("Focus %s (Minor %d)\n", focusActive ? "ON" : "OFF", focusActive ? BEACON_MINOR_ON : BEACON_MINOR_OFF);
-  updateAdvertisement();
+  Serial.printf("Focus %s\n", focusActive ? "ON" : "OFF");
+
+  if (focusActive) {
+    advertising->start();
+  } else {
+    disconnectAllPeers();
+    advertising->stop();
+  }
 }
 
 void setup() {
@@ -84,10 +80,25 @@ void setup() {
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
   NimBLEDevice::init(DEVICE_NAME);
-  advertising = NimBLEDevice::getAdvertising();
-  updateAdvertisement();
+  // Bonding, no MITM (no display/keypad on the badge to confirm a
+  // passkey -- "Just Works" pairing), LE Secure Connections.
+  NimBLEDevice::setSecurityAuth(true, false, true);
 
-  Serial.println("Badge ready, advertising OFF state.");
+  server = NimBLEDevice::createServer();
+  server->setCallbacks(new BadgeServerCallbacks());
+  // We manage advertising restart ourselves (see onDisconnect) based on
+  // whether the badge is still meant to be ON, rather than NimBLE's
+  // blanket auto-resume, which can't distinguish a deliberate OFF-press
+  // disconnect from an unintended drop.
+  server->advertiseOnDisconnect(false);
+  server->start();
+
+  advertising = NimBLEDevice::getAdvertising();
+  NimBLEAdvertisementData advData;
+  advData.setName(DEVICE_NAME);
+  advertising->setAdvertisementData(advData);
+
+  Serial.println("Badge ready, OFF (not advertising).");
 }
 
 void loop() {

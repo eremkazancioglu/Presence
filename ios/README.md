@@ -1,16 +1,21 @@
 # Presence Badge companion app (iOS)
 
-Minimal SwiftUI app that watches for the badge's iBeacon identity and
-toggles Focus mode. See [../docs/ble-protocol.md](../docs/ble-protocol.md)
-for the advertising format and why it's iBeacon rather than a custom BLE
-scheme (short version: CoreLocation region monitoring is the only
-mechanism iOS provides that reliably wakes an app in the background/from
-terminated state — plain CoreBluetooth background scanning is too
-throttled to be usable for a badge meant to work while the phone is
-locked/pocketed).
+**No longer the trigger mechanism** — the badge now uses a bonded BLE
+connect/disconnect design driven by a native Shortcuts automation instead
+(see [../docs/ble-protocol.md](../docs/ble-protocol.md) for why: this
+app's iBeacon/CoreLocation-based background detection didn't work
+reliably in practice despite correct setup, and hit a hard OS wall even
+when it did fire — a backgrounded app can't open another app via URL at
+all). Kept in the repo as a working foreground debug/status tool and a
+foundation for future customization, not as something you need to install
+for the badge to work day-to-day.
 
-**Status:** builds and runs. Verified against the real badge in the
-foreground; background/locked-phone behavior not yet validated on device.
+Minimal SwiftUI app that watches for the badge's iBeacon identity and
+toggles Focus mode via a pre-built Shortcut, while in the foreground.
+
+**Status:** builds and runs, foreground behavior verified against real
+hardware. Background/locked-phone behavior was investigated at length and
+does not work reliably — see CLAUDE.md's Architecture decisions.
 
 ## Why it needs Location permission
 

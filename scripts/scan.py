@@ -1,64 +1,53 @@
 """Laptop-side verification tool for the Bedside Focus Badge.
 
-Scans for the badge's iBeacon advertisement and prints focus state
-changes. See docs/ble-protocol.md for the advertising format this parses.
+The badge only advertises while it wants to be connected (button pressed
+"on" and not yet connected to the phone) -- see docs/ble-protocol.md. This
+prints when that advertisement appears/disappears, as a way to confirm
+the badge is broadcasting correctly before involving the phone at all. It
+can't observe the phone's actual connection state.
 
 Usage:
     uv run scripts/scan.py
 """
 
 import asyncio
-import struct
-from uuid import UUID
 
 from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 
-APPLE_MANUFACTURER_ID = 0x004C
-IBEACON_SUBTYPE = 0x02
-BADGE_UUID = UUID("651bbfec-f197-444e-bf25-d72c1d4ccd84")
-MINOR_ON = 1
+DEVICE_NAME = "PresenceBadge"
+ABSENCE_TIMEOUT_S = 3.0
 
-_last_state: bool | None = None
-
-
-def _parse_minor(mfg_bytes: bytes) -> int | None:
-    # Layout: subtype(1) subtype_length(1) uuid(16) major(2) minor(2) tx_power(1)
-    if len(mfg_bytes) < 23 or mfg_bytes[0] != IBEACON_SUBTYPE:
-        return None
-
-    uuid = UUID(bytes=mfg_bytes[2:18])
-    if uuid != BADGE_UUID:
-        return None
-
-    (minor,) = struct.unpack(">H", mfg_bytes[20:22])
-    return minor
+_seen = False
+_last_seen_at = 0.0
 
 
 def _on_detection(device: BLEDevice, advertisement: AdvertisementData) -> None:
-    global _last_state
+    global _seen, _last_seen_at
 
-    mfg_bytes = advertisement.manufacturer_data.get(APPLE_MANUFACTURER_ID)
-    if mfg_bytes is None:
+    if advertisement.local_name != DEVICE_NAME:
         return
 
-    minor = _parse_minor(mfg_bytes)
-    if minor is None:
-        return
+    _last_seen_at = asyncio.get_event_loop().time()
+    if not _seen:
+        _seen = True
+        print(f"Badge advertising (wants to connect)  (badge: {device.address})")
 
-    state = minor == MINOR_ON
-    if state == _last_state:
-        return
 
-    _last_state = state
-    print(f"Focus {'ON' if state else 'OFF'}  (badge: {device.address})")
+async def _watch_for_absence() -> None:
+    global _seen
+    while True:
+        await asyncio.sleep(0.5)
+        if _seen and (asyncio.get_event_loop().time() - _last_seen_at) > ABSENCE_TIMEOUT_S:
+            _seen = False
+            print("Badge no longer advertising (connected, or off)")
 
 
 async def main() -> None:
-    print("Scanning for the badge's iBeacon advertisement... (Ctrl+C to stop)")
+    print(f"Scanning for '{DEVICE_NAME}' advertisements... (Ctrl+C to stop)")
     async with BleakScanner(_on_detection):
-        await asyncio.Event().wait()
+        await _watch_for_absence()
 
 
 if __name__ == "__main__":
