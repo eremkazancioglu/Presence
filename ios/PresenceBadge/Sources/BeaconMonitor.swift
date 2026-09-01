@@ -4,18 +4,24 @@ import Combine
 /// Watches for the badge's iBeacon identity and reacts to state changes.
 /// Protocol details: docs/ble-protocol.md in the repo root.
 ///
-/// Uses CoreLocation region monitoring rather than a raw CoreBluetooth
-/// scan, because iOS reliably wakes an app on region enter/exit even from
-/// the background or a terminated state — raw CB background scanning is
-/// throttled too heavily to be usable for this badge's actual purpose
-/// (working while the phone is locked/pocketed). See ble-protocol.md's
-/// "Why iBeacon" section for the full reasoning.
+/// Background wake uses `CLMonitor` (iOS 17+), not the older
+/// `CLLocationManager.startMonitoring(for: CLBeaconRegion)` +
+/// delegate-callback mechanism. Both were tried: the legacy region
+/// monitoring registered correctly and worked reliably in the foreground
+/// (didEnterRegion/didDetermineState fired as expected), but delivered
+/// nothing at all in the background after extended testing (5+ minutes,
+/// permissions/accuracy/Background App Refresh/Low Power Mode all ruled
+/// out as causes). CLMonitor is Apple's newer replacement subsystem for
+/// condition-based background monitoring and is what's used here instead.
 ///
-/// Important limitation: background region-entry events carry no RSSI —
-/// CoreLocation just reports "this identity is now in range," with no
-/// signal-strength gate available. The RSSI proximity filter only applies
-/// while foreground ranging is active. Fine while there's a single badge
-/// (see CLAUDE.md); revisit once more than one badge exists.
+/// Foreground live status/RSSI still comes from `startRangingBeacons`
+/// (CLLocationManager), which is unrelated to and unaffected by this
+/// change -- that was already confirmed working.
+///
+/// Important limitation: background events carry no RSSI. The RSSI
+/// proximity filter only applies while foreground ranging is active. Fine
+/// while there's a single badge (see CLAUDE.md); revisit once more than
+/// one badge exists.
 final class BeaconMonitor: NSObject, ObservableObject {
     private static let badgeUUID = UUID(uuidString: "651BBFEC-F197-444E-BF25-D72C1D4CCD84")!
     private static let major: CLBeaconMajorValue = 1
@@ -24,8 +30,10 @@ final class BeaconMonitor: NSObject, ObservableObject {
 
     private static let onConstraint = CLBeaconIdentityConstraint(uuid: badgeUUID, major: major, minor: minorOn)
     private static let offConstraint = CLBeaconIdentityConstraint(uuid: badgeUUID, major: major, minor: minorOff)
-    private static let onRegion = CLBeaconRegion(beaconIdentityConstraint: onConstraint, identifier: "BadgeFocusOn")
-    private static let offRegion = CLBeaconRegion(beaconIdentityConstraint: offConstraint, identifier: "BadgeFocusOff")
+
+    private static let onIdentifier = "BadgeFocusOn"
+    private static let offIdentifier = "BadgeFocusOff"
+    private static let monitorName = "com.eremkazancioglu.PresenceBadge.monitor"
 
     /// Minimum RSSI to act on a *foreground* sighting — see the class-level
     /// note above on why this can't apply to background events.
@@ -41,13 +49,14 @@ final class BeaconMonitor: NSObject, ObservableObject {
     private let locationManager = CLLocationManager()
     private var lastAppliedState: Bool?
     private let focusTrigger = FocusTrigger()
+    private var monitorTask: Task<Void, Never>?
 
     override init() {
         super.init()
         locationManager.delegate = self
         authorizationStatus = locationManager.authorizationStatus
         accuracyAuthorization = locationManager.accuracyAuthorization
-        print("[BeaconMonitor] init: auth=\(authorizationStatus.rawValue) accuracy=\(accuracyAuthorization == .fullAccuracy ? "full" : "reduced") rangingAvailable=\(CLLocationManager.isRangingAvailable()) monitoringAvailable=\(CLLocationManager.isMonitoringAvailable(for: CLBeaconRegion.self))")
+        print("[BeaconMonitor] init: auth=\(authorizationStatus.rawValue) accuracy=\(accuracyAuthorization == .fullAccuracy ? "full" : "reduced") rangingAvailable=\(CLLocationManager.isRangingAvailable())")
     }
 
     func requestAuthorizationAndStartMonitoring() {
@@ -69,11 +78,30 @@ final class BeaconMonitor: NSObject, ObservableObject {
         }
     }
 
-    private func startMonitoring() {
-        locationManager.startMonitoring(for: Self.onRegion)
-        locationManager.startMonitoring(for: Self.offRegion)
-        locationManager.requestState(for: Self.onRegion)
-        locationManager.requestState(for: Self.offRegion)
+    private func startBackgroundMonitoring() {
+        monitorTask?.cancel()
+        monitorTask = Task { [weak self] in
+            guard let self else { return }
+            let monitor = await CLMonitor(Self.monitorName)
+
+            let onCondition = CLMonitor.BeaconIdentityCondition(uuid: Self.badgeUUID, major: Self.major, minor: Self.minorOn)
+            let offCondition = CLMonitor.BeaconIdentityCondition(uuid: Self.badgeUUID, major: Self.major, minor: Self.minorOff)
+            await monitor.add(onCondition, identifier: Self.onIdentifier)
+            await monitor.add(offCondition, identifier: Self.offIdentifier)
+            print("[BeaconMonitor] CLMonitor conditions registered")
+
+            do {
+                for try await event in await monitor.events {
+                    print("[BeaconMonitor] CLMonitor event: \(event.identifier) state=\(event.state)")
+                    guard event.state == .satisfied else { continue }
+                    await MainActor.run {
+                        self.apply(state: event.identifier == Self.onIdentifier, rssi: nil)
+                    }
+                }
+            } catch {
+                print("[BeaconMonitor] CLMonitor events stream error: \(error)")
+            }
+        }
     }
 
     /// Call when the app becomes active — ranging gives live RSSI for the
@@ -109,7 +137,7 @@ final class BeaconMonitor: NSObject, ObservableObject {
 
         lastEventDescription = rssi != nil
             ? "Applied focus \(state ? "ON" : "OFF") (RSSI \(rssi!))"
-            : "Applied focus \(state ? "ON" : "OFF") (background region event, no RSSI)"
+            : "Applied focus \(state ? "ON" : "OFF") (background CLMonitor event, no RSSI)"
         focusTrigger.setFocus(on: state)
     }
 }
@@ -121,7 +149,7 @@ extension BeaconMonitor: CLLocationManagerDelegate {
         print("[BeaconMonitor] didChangeAuthorization: auth=\(authorizationStatus.rawValue) accuracy=\(accuracyAuthorization == .fullAccuracy ? "full" : "reduced")")
         if authorizationStatus == .authorizedAlways || authorizationStatus == .authorizedWhenInUse {
             requestFullAccuracyIfNeeded()
-            startMonitoring()
+            startBackgroundMonitoring()
             // Also (re)start ranging here, not just on scenePhase changes:
             // this delegate callback fires once per launch regardless of
             // whether the app's scenePhase actually *transitions* (it
@@ -130,18 +158,6 @@ extension BeaconMonitor: CLLocationManagerDelegate {
             // fresh foreground launch.
             startForegroundRanging()
         }
-    }
-
-    func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
-        print("[BeaconMonitor] didEnterRegion: \(region.identifier)")
-        guard let beaconRegion = region as? CLBeaconRegion else { return }
-        apply(state: beaconRegion.identifier == "BadgeFocusOn", rssi: nil)
-    }
-
-    func locationManager(_ manager: CLLocationManager, didDetermineState state: CLRegionState, for region: CLRegion) {
-        print("[BeaconMonitor] didDetermineState: \(region.identifier) state=\(state.rawValue)")
-        guard state == .inside, let beaconRegion = region as? CLBeaconRegion else { return }
-        apply(state: beaconRegion.identifier == "BadgeFocusOn", rssi: nil)
     }
 
     func locationManager(
@@ -161,10 +177,6 @@ extension BeaconMonitor: CLLocationManagerDelegate {
         error: Error
     ) {
         print("[BeaconMonitor] didFailRangingFor minor=\(constraint.minor?.description ?? "any"): \(error)")
-    }
-
-    func locationManager(_ manager: CLLocationManager, monitoringDidFailFor region: CLRegion?, withError error: Error) {
-        print("[BeaconMonitor] monitoringDidFailFor \(region?.identifier ?? "?"): \(error)")
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
