@@ -119,6 +119,13 @@ extension BeaconMonitor: CLLocationManagerDelegate {
         if authorizationStatus == .authorizedAlways || authorizationStatus == .authorizedWhenInUse {
             requestFullAccuracyIfNeeded()
             startMonitoring()
+            // Also (re)start ranging here, not just on scenePhase changes:
+            // this delegate callback fires once per launch regardless of
+            // whether the app's scenePhase actually *transitions* (it
+            // doesn't, if the app launches straight into .active), so this
+            // is the one reliably-fired hook to kick off ranging on a
+            // fresh foreground launch.
+            startForegroundRanging()
         }
     }
 
