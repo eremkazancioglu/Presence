@@ -15,9 +15,17 @@ targets:
       path: Resources/Info.plist
       properties:
         CFBundleDisplayName: Presence Badge
-        NSBluetoothAlwaysUsageDescription: >-
-          Presence Badge scans for your bedside focus badge's Bluetooth
-          broadcast to detect when you press it.
+        NSLocationWhenInUseUsageDescription: >-
+          Presence Badge uses Bluetooth beacon detection (via Location
+          Services) to notice when you press your bedside focus badge.
+        NSLocationAlwaysAndWhenInUseUsageDescription: >-
+          Presence Badge needs "Always" location access to reliably react
+          to your badge while your phone is locked or the app is in the
+          background -- this is required for beacon detection to keep
+          working outside the app itself. No location data is collected
+          or stored.
+        UIBackgroundModes:
+          - location
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

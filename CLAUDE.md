@@ -41,8 +41,10 @@ simple and don't over-build for anticipated future requirements.
   raw GPIO numbers in Arduino code (e.g. label `D9` is actually GPIO20,
   not GPIO9). Always reference pins via the `D#` macros in code, not raw
   GPIO numbers, so the pin in code matches the pin printed on the board.
-- iOS companion app scaffolded (`ios/`, SwiftUI + xcodegen) — builds, but
-  not yet tested against the real badge over BLE.
+- iOS companion app (`ios/`, SwiftUI + xcodegen) builds and runs on real
+  hardware; foreground behavior (badge -> app -> Set Focus shortcut ->
+  Do Not Disturb) verified working. Background/locked-phone behavior not
+  yet validated on device.
 - This is a personal side project, prototyping only — no hospital
   partnership or funding in place yet.
 
@@ -71,6 +73,35 @@ simple and don't over-build for anticipated future requirements.
   "turn on focus mode" logic lives on the phone side (a companion app, or
   for prototyping, an OS automation like iOS Shortcuts or Android
   Tasker/MacroDroid reacting to the BLE advertisement).
+- **Badge advertises in iBeacon format (UUID/Major/Minor), not a custom
+  BLE payload.** Originally planned as a custom manufacturer-data scheme
+  (still simplest for foreground-only use). Switched to standard iBeacon
+  because iOS's CoreLocation region monitoring — the only mechanism that
+  reliably wakes an app in the background or from a terminated state — only
+  recognizes iBeacon-format advertisements, not arbitrary custom payloads.
+  Plain CoreBluetooth background scanning was tested/considered and
+  rejected: iOS throttles it too heavily (roughly one discovery per
+  peripheral per background scan cycle) to be usable for a badge whose
+  whole point is working while the phone is locked/pocketed. Region
+  monitoring isn't literally instant (real-world latency: low tens of
+  seconds) or 100% guaranteed, but is acceptable since the actual use case
+  (nurse presses badge once at bedside, stays in that state for the
+  visit) doesn't need instant response. See `docs/ble-protocol.md`.
+- **iOS companion app toggles Focus via a pre-built Shortcut, not a direct
+  API call.** No public iOS API lets a third-party app toggle Focus mode
+  directly — only Shortcuts' own "Set Focus" action can. The app runs a
+  pre-built shortcut via the `shortcuts://x-callback-url/run-shortcut` URL
+  scheme (the callback variant returns control to the app afterward). The
+  two shortcuts (`Badge Focus On` / `Badge Focus Off`, each just a Set
+  Focus action targeting Do Not Disturb) must be hand-built once in the
+  Shortcuts app — `.shortcut` files are a signed binary format that can't
+  be generated programmatically — then bundled into the app so its
+  onboarding flow can install them on any device. See `ios/README.md`.
+- **Do Not Disturb only for now, not a custom Focus mode.** Simpler scope;
+  a custom Focus mode would need to exist identically on every user's
+  phone for a bundled shortcut to work for them, and there's no API to
+  create Focus modes programmatically either. Revisit if this moves beyond
+  a single-wearer prototype.
 - **Apple Watch needs no separate handling.** Watch mirrors iPhone Focus
   state automatically via existing Apple sync — no direct badge-to-Watch
   communication needed.
@@ -91,9 +122,23 @@ simple and don't over-build for anticipated future requirements.
 - Advertising-only vs. GATT service (advertising-only is the current
   plan for simplicity; revisit if two-way communication, e.g. battery
   status or ack, becomes necessary).
-- Exact BLE payload/UUID scheme.
-- Whether to build a real companion app or rely on Shortcuts/Tasker
-  indefinitely for the prototype phase.
+- ~~Exact BLE payload/UUID scheme~~ — decided: iBeacon format, see
+  Architecture decisions above and `docs/ble-protocol.md`.
+- ~~Whether to build a real companion app or rely on Shortcuts/Tasker
+  indefinitely~~ — decided: real companion app (`ios/`), because reliable
+  background reaction needs CoreLocation region monitoring, which a
+  generic Shortcuts automation trigger can't provide precisely/reliably
+  enough for this use case (evaluated and rejected — see conversation
+  history around Pushcut/iBeacon triggers).
+- Per-badge unique identity (UUID/Major) — not needed while only one badge
+  exists; the RSSI proximity filter is a stand-in, but doesn't distinguish
+  "my badge" from "a colleague's badge nearby," and background events have
+  no RSSI at all to filter on. Needs real per-badge IDs once more than one
+  badge is in use.
+- Android version — DND can be toggled via a direct public API
+  (`NotificationManager.setInterruptionFilter` + one-time "Notification
+  Policy Access" permission), no Shortcuts-style indirection needed. Real
+  scope, not started.
 - Enclosure/form factor — not started, comes after core logic works.
 - Battery — not started, comes after core logic works.
 

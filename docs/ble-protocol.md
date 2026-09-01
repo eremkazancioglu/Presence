@@ -1,33 +1,62 @@
 # BLE advertising protocol (phase 1)
 
-Advertising-only, no GATT service, no pairing. The badge broadcasts its
-current on/off state continuously; any listening device (phone automation,
-laptop scanner) reads it passively.
+The badge advertises as a standard **iBeacon** — not a custom manufacturer
+data scheme (see "Why iBeacon, not custom manufacturer data" below).
 
 ## Advertisement contents
 
-- **Device name:** `PresenceBadge` (constant — does not change with state,
-  so the packet doesn't need a full re-encode of the name on every toggle).
-- **Manufacturer data:** company ID `0xFFFF` (Bluetooth SIG reserved value
-  for prototyping/testing — not for production use), followed by 2 bytes:
+- **UUID:** `651BBFEC-F197-444E-BF25-D72C1D4CCD84` — fixed, identifies this
+  badge design. (If more badges are built later, this is the natural
+  per-badge identity field — see CLAUDE.md's open questions.)
+- **Major:** `1` — fixed for now, unused, reserved for future
+  differentiation (e.g. hardware revision).
+- **Minor:** the on/off state.
+  - `0` = focus OFF
+  - `1` = focus ON
+- **Tx power byte:** `0xC5` (-59 dBm), the standard iBeacon calibration
+  reference value — not calibrated against this specific badge, fine for
+  our purposes since we don't rely on iBeacon's distance estimate.
 
-  | Byte offset | Meaning        | Values                     |
-  |-------------|----------------|-----------------------------|
-  | 0           | Protocol magic | `0x50` (`'P'`)              |
-  | 1           | Focus state    | `0x00` = OFF, `0x01` = ON   |
+The device also advertises the name `PresenceBadge` in the scan response
+packet (not the main advertisement — the iBeacon payload alone fills
+nearly the whole 31-byte legacy advertising packet), for human-readable
+identification when scanning with any BLE tool.
 
-  Example payload (focus ON): `50 01`
+Toggling: press the button, badge switches its advertised Minor value
+between 0 and 1. The iOS app doesn't read this as a single "state changed"
+event — it treats "beacon `...4C84`/Major 1/Minor 1 is present" as ON and
+"Minor 0 is present" as OFF, and reacts to the region transition.
 
-## Why manufacturer data instead of encoding state in the name
+## Why iBeacon, not custom manufacturer data
 
-Keeps the device name stable (easier to spot while scanning with any BLE
-app) and keeps the state in a fixed, easy-to-parse byte for automations
-(iOS Shortcuts BLE triggers, `bleak` scripts, etc.) rather than parsing a
-changing string.
+The original design used a custom manufacturer data payload (company ID
+`0xFFFF` + 2 bespoke bytes). That worked for foreground scanning but has no
+reliable way to wake or notify the iOS app while it's backgrounded or the
+phone is locked — iOS throttles raw CoreBluetooth background scanning
+heavily (roughly one discovery callback per peripheral per scan cycle,
+scan cycles slowed "dramatically"), with no guarantee a given advertisement
+is ever seen.
+
+iBeacon format is recognized by CoreLocation's **region monitoring**
+(`CLBeaconRegion`), which iOS built specifically to reliably wake an app in
+the background — even from a fully terminated state — when a beacon
+identity appears/disappears. Not literally instant (real-world reports:
+low tens of seconds) and not 100% guaranteed (rare relaunch-failure edge
+cases are documented), but meaningfully more reliable than raw background
+BLE scanning. Given the whole point of this badge is working while the
+phone is locked/pocketed, that reliability matters more than instant
+foreground latency.
+
+Using region monitoring for a button-triggered signal (rather than actual
+physical proximity) works because the badge is worn at an effectively
+fixed, close distance from the phone at all times — what changes is *which
+Minor value* the badge broadcasts (driven by the button), not the physical
+distance. Region monitoring here is a delivery mechanism for a
+button-driven state signal, not a proximity trigger.
 
 ## Not decided yet / revisit later
 
-- Whether company ID `0xFFFF` needs to change if this ever ships beyond a
-  personal prototype (SIG reserves it for testing only).
-- GATT service — only needed if two-way communication (e.g. battery level,
-  ack) becomes necessary. Not in scope for phase 1.
+- Whether a real GATT service becomes necessary (e.g. battery level, ack).
+  Not in scope for phase 1.
+- Per-badge unique UUID/Major, once more than one badge exists (see
+  CLAUDE.md).

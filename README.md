@@ -5,9 +5,9 @@ mode on the wearer's phone (and, by Apple's own sync, their Watch). See
 [CLAUDE.md](CLAUDE.md) for full project background and scope.
 
 **Status:** phase 1 prototype — manual button press only. Badge firmware
-and laptop verification tool work end-to-end; iOS companion app scaffolded
-and builds, not yet tested against the real badge. No battery, no
-enclosure yet.
+and laptop verification tool work end-to-end; iOS companion app builds and
+runs on real hardware, foreground behavior verified, background/locked-
+phone behavior not yet validated. No battery, no enclosure yet.
 
 ## Repo layout
 
@@ -50,10 +50,11 @@ pin referenced in code matches the pin printed on the board.
 ### What it does
 
 On each button press, the badge toggles an internal on/off state and
-updates a continuous BLE advertisement reflecting it (device name
-`PresenceBadge` + manufacturer data byte). No pairing, no GATT service.
-See [docs/ble-protocol.md](docs/ble-protocol.md) for the exact payload
-format.
+updates a continuous BLE advertisement reflecting it, in standard iBeacon
+format (UUID + Major + Minor) so the iOS app can react to it reliably even
+while backgrounded. No pairing, no GATT service. See
+[docs/ble-protocol.md](docs/ble-protocol.md) for the exact payload format
+and why iBeacon specifically.
 
 ## Verifying it with the scanner script
 
