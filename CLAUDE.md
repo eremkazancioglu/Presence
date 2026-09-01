@@ -43,8 +43,14 @@ simple and don't over-build for anticipated future requirements.
   GPIO numbers, so the pin in code matches the pin printed on the board.
 - iOS companion app (`ios/`, SwiftUI + xcodegen) builds and runs on real
   hardware; foreground behavior (badge -> app -> Set Focus shortcut ->
-  Do Not Disturb) verified working. Background/locked-phone behavior not
-  yet validated on device.
+  Do Not Disturb) verified working. Background/locked-phone behavior was
+  investigated extensively (iBeacon + CoreLocation region monitoring, then
+  the newer `CLMonitor` API) and neither delivered background events
+  reliably in practice — see Architecture decisions below. Current plan
+  has moved to a native Shortcuts Bluetooth connect/disconnect automation
+  instead; **firmware needs to change to a bonded/connectable design**
+  (not yet done) and the two Shortcuts need to be rebuilt around that
+  trigger instead of the app's URL-scheme invocation.
 - This is a personal side project, prototyping only — no hospital
   partnership or funding in place yet.
 
@@ -63,40 +69,59 @@ simple and don't over-build for anticipated future requirements.
 
 ## Architecture decisions made so far
 
-- **Broadcast, not pair.** The badge should continuously advertise a BLE
-  packet on button press (custom UUID/payload), rather than maintaining a
-  formal paired connection to each device. Rationale: no pairing UX
-  friction, no connection-count limits, any number of listening devices can
-  react to the same broadcast independently.
-- **Phone does the real work.** The badge's only job is: read button state,
-  broadcast a BLE signal reflecting current on/off state. All actual
-  "turn on focus mode" logic lives on the phone side (a companion app, or
-  for prototyping, an OS automation like iOS Shortcuts or Android
-  Tasker/MacroDroid reacting to the BLE advertisement).
-- **Badge advertises in iBeacon format (UUID/Major/Minor), not a custom
-  BLE payload.** Originally planned as a custom manufacturer-data scheme
-  (still simplest for foreground-only use). Switched to standard iBeacon
-  because iOS's CoreLocation region monitoring — the only mechanism that
-  reliably wakes an app in the background or from a terminated state — only
-  recognizes iBeacon-format advertisements, not arbitrary custom payloads.
-  Plain CoreBluetooth background scanning was tested/considered and
-  rejected: iOS throttles it too heavily (roughly one discovery per
-  peripheral per background scan cycle) to be usable for a badge whose
-  whole point is working while the phone is locked/pocketed. Region
-  monitoring isn't literally instant (real-world latency: low tens of
-  seconds) or 100% guaranteed, but is acceptable since the actual use case
-  (nurse presses badge once at bedside, stays in that state for the
-  visit) doesn't need instant response. See `docs/ble-protocol.md`.
-- **iOS companion app toggles Focus via a pre-built Shortcut, not a direct
-  API call.** No public iOS API lets a third-party app toggle Focus mode
-  directly — only Shortcuts' own "Set Focus" action can. The app runs a
-  pre-built shortcut via the `shortcuts://x-callback-url/run-shortcut` URL
-  scheme (the callback variant returns control to the app afterward). The
-  two shortcuts (`Badge Focus On` / `Badge Focus Off`, each just a Set
-  Focus action targeting Do Not Disturb) must be hand-built once in the
-  Shortcuts app — `.shortcut` files are a signed binary format that can't
-  be generated programmatically — then bundled into the app so its
-  onboarding flow can install them on any device. See `ios/README.md`.
+- **Pair once, then let the button drive connect/disconnect.** (Supersedes
+  the original "broadcast, not pair" plan below.) The badge bonds with the
+  phone once during setup. Between presses it stays non-connectable/idle
+  — nothing for iOS to auto-reconnect to. Pressing "on" starts (and keeps)
+  connectable advertising, so iOS's bonded auto-reconnect completes the
+  connection; pressing "off" makes the badge *actively* disconnect (not
+  just stop advertising — once connected it isn't advertising anyway, so
+  merely stopping advertising wouldn't drop a live connection). A native
+  Shortcuts personal automation ("When Bluetooth device connects/
+  disconnects") drives Focus on/off from those two events. Because the
+  badge stays advertising-connectable for the *entire* ON duration (not
+  just at the press), an accidental mid-visit drop (RF interference, brief
+  range loss) self-heals via auto-reconnect without another button press
+  — shows up as a brief disconnect-then-reconnect flicker, not a silent
+  stuck-off failure. This is a system-level Bluetooth connection (like
+  AirPods/Watch), not one our own app manages, so it isn't subject to the
+  app-background-suspension problems below.
+  - *Original plan, superseded:* continuous BLE broadcast on button press
+    (custom UUID/payload), no pairing at all — any number of listening
+    devices react to the same broadcast independently, phone-side
+    automation reacts to the advertisement. Simpler and worked fine in the
+    foreground, but see the background-reliability investigation below for
+    why it didn't hold up for the badge's actual purpose.
+- **Why not a custom iOS app watching BLE/iBeacon advertisements
+  (tried and abandoned):** built a full custom SwiftUI app using iBeacon
+  advertising (UUID/Major/Minor, switched to from a custom manufacturer-data
+  scheme specifically to use CoreLocation region monitoring) plus, after
+  that also failed, Apple's newer `CLMonitor` API (iOS 17+) — both are
+  documented as the mechanisms for reliably waking an app in the
+  background/terminated state. Neither actually delivered background
+  events reliably on real hardware after extensive testing (permissions,
+  precise-location, Background App Refresh, Low Power Mode all verified
+  not at fault; foreground detection worked correctly in both cases,
+  proving the regions/conditions themselves were set up correctly).
+  `CLMonitor` additionally surfaced a separate, unrelated hard blocker even
+  when it did fire: a backgrounded app cannot call
+  `UIApplication.open(_:)` to hand off to Shortcuts at all (`iOS` flatly
+  refuses — `LSApplicationWorkspaceErrorDomain` code 115) since that's an
+  intentional security boundary, not something app code can route around.
+  Together this ruled out the "custom app + iBeacon" architecture for
+  phase 1. The custom app (`ios/`) still exists in the repo and still
+  works correctly in the foreground; it's just not the trigger mechanism
+  going forward. Detailed history is in this project's conversation log if
+  ever revisited.
+- **iOS Focus toggling still goes through a pre-built Shortcut, not a
+  direct API call.** No public iOS API lets a third-party app or an
+  automation toggle Focus mode directly — only Shortcuts' own "Set Focus"
+  action can. The two shortcuts (`Badge Focus On` / `Badge Focus Off`,
+  each just a Set Focus action targeting Do Not Disturb) are hand-built
+  once in the Shortcuts app — `.shortcut` files are a signed binary format
+  that can't be generated programmatically. With the connect/disconnect
+  pivot, these are now triggered by native Shortcuts personal automations
+  rather than the custom app's `x-callback-url` invocation.
 - **Do Not Disturb only for now, not a custom Focus mode.** Simpler scope;
   a custom Focus mode would need to exist identically on every user's
   phone for a bundled shortcut to work for them, and there's no API to
@@ -125,11 +150,16 @@ simple and don't over-build for anticipated future requirements.
 - ~~Exact BLE payload/UUID scheme~~ — decided: iBeacon format, see
   Architecture decisions above and `docs/ble-protocol.md`.
 - ~~Whether to build a real companion app or rely on Shortcuts/Tasker
-  indefinitely~~ — decided: real companion app (`ios/`), because reliable
-  background reaction needs CoreLocation region monitoring, which a
-  generic Shortcuts automation trigger can't provide precisely/reliably
-  enough for this use case (evaluated and rejected — see conversation
-  history around Pushcut/iBeacon triggers).
+  indefinitely~~ — revisited twice. First decided in favor of a real
+  companion app (`ios/`) using iBeacon + CoreLocation, on the theory that
+  a generic Shortcuts trigger (e.g. Pushcut's iBeacon feature) couldn't
+  provide precise/reliable enough background reaction. That app's own
+  background mechanism then turned out not to work reliably in practice
+  (see Architecture decisions above) — so the current plan is a *native*
+  Shortcuts automation (Bluetooth connect/disconnect), not a third-party
+  app or a custom app, for the actual trigger. The custom app remains in
+  the repo as a working foreground tool/foundation, not abandoned, just
+  not load-bearing for phase 1 anymore.
 - Per-badge unique identity (UUID/Major) — not needed while only one badge
   exists; the RSSI proximity filter is a stand-in, but doesn't distinguish
   "my badge" from "a colleague's badge nearby," and background events have
