@@ -43,7 +43,14 @@ NimBLEAdvertising *advertising;
 
 void updateAdvertisement() {
   NimBLEBeacon beacon;
-  beacon.setManufacturerId(0x004C); // Apple, required for iBeacon format
+  // NimBLEBeacon::setManufacturerId() internally byte-swaps its input --
+  // correct for Major/Minor (which need big-endian per the iBeacon spec)
+  // but wrong for the company ID (which needs little-endian). Passing the
+  // pre-swapped 0x4C00 compensates so the real Apple ID 0x004C ends up on
+  // the wire. Verified against a raw packet capture -- without this, the
+  // badge broadcasts company ID 0x4C00 instead of 0x004C, which neither
+  // scan.py nor iOS's CoreLocation recognize as a valid iBeacon.
+  beacon.setManufacturerId(0x4C00);
   beacon.setProximityUUID(NimBLEUUID(BEACON_UUID));
   beacon.setMajor(BEACON_MAJOR);
   beacon.setMinor(focusActive ? BEACON_MINOR_ON : BEACON_MINOR_OFF);
