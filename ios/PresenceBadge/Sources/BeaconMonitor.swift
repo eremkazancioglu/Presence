@@ -115,7 +115,7 @@ extension BeaconMonitor: CLLocationManagerDelegate {
 
     func locationManager(
         _ manager: CLLocationManager,
-        didRangeBeacons beacons: [CLBeacon],
+        didRange beacons: [CLBeacon],
         satisfying constraint: CLBeaconIdentityConstraint
     ) {
         guard let beacon = beacons.first, beacon.rssi != 0 else { return }
