@@ -31,8 +31,18 @@ simple and don't over-build for anticipated future requirements.
 
 - Hardware ordered: Seeed Studio XIAO ESP32C6 (pre-soldered), tactile
   push buttons, mini breadboards (170-point), jumper wire kit (M-M and M-F).
-- No firmware written yet.
-- No phone-side app/automation built yet.
+  Tactile button itself hasn't arrived yet.
+- Firmware written and verified working end-to-end: button press (via a
+  temporary D0-to-GND jumper, standing in for the tactile button) toggles
+  state and broadcasts it over BLE; confirmed received by
+  `scripts/scan.py` on a laptop. See `firmware/badge/badge.ino` and
+  `docs/ble-protocol.md`.
+- **Gotcha:** on the XIAO ESP32C6, silkscreen pin labels don't map 1:1 to
+  raw GPIO numbers in Arduino code (e.g. label `D9` is actually GPIO20,
+  not GPIO9). Always reference pins via the `D#` macros in code, not raw
+  GPIO numbers, so the pin in code matches the pin printed on the board.
+- iOS companion app scaffolded (`ios/`, SwiftUI + xcodegen) — builds, but
+  not yet tested against the real badge over BLE.
 - This is a personal side project, prototyping only — no hospital
   partnership or funding in place yet.
 

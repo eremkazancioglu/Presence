@@ -4,13 +4,17 @@ A BLE button worn on a hospital staff badge that toggles focus/do-not-disturb
 mode on the wearer's phone (and, by Apple's own sync, their Watch). See
 [CLAUDE.md](CLAUDE.md) for full project background and scope.
 
-**Status:** phase 1 prototype — manual button press only. No phone app, no
-battery, no enclosure yet.
+**Status:** phase 1 prototype — manual button press only. Badge firmware
+and laptop verification tool work end-to-end; iOS companion app scaffolded
+and builds, not yet tested against the real badge. No battery, no
+enclosure yet.
 
 ## Repo layout
 
 - `firmware/badge/` — Arduino sketch for the XIAO ESP32C6.
 - `scripts/` — Python tooling (BLE scanner for verifying the badge works).
+- `ios/` — SwiftUI companion app that reacts to the badge and toggles
+  Focus mode. See [ios/README.md](ios/README.md).
 - `docs/` — protocol/design notes.
 
 ## Hardware
@@ -61,10 +65,12 @@ uv sync
 uv run scripts/scan.py
 ```
 
-Press the BOOT button on the badge — you should see `Focus ON` / `Focus
-OFF` printed as the state toggles.
+Jumper D0 to GND on the badge (see "Temporary input" above) — you should
+see `Focus ON` / `Focus OFF` printed as the state toggles.
 
 ## Not built yet
 
-Phone-side app/automation, battery/power management, enclosure, GATT
-service, multi-device pairing, proximity-based (phase 2) triggering.
+Battery/power management, enclosure, GATT service, multi-device pairing,
+proximity-based (phase 2) triggering. iOS app is scaffolded (see
+[ios/README.md](ios/README.md)) but not yet validated against real
+hardware end-to-end.
