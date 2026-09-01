@@ -32,6 +32,7 @@ final class BeaconMonitor: NSObject, ObservableObject {
     @Published var rssiThreshold: Int = -60
 
     @Published private(set) var authorizationStatus: CLAuthorizationStatus = .notDetermined
+    @Published private(set) var accuracyAuthorization: CLAccuracyAuthorization = .reducedAccuracy
     @Published private(set) var isRanging = false
     @Published private(set) var lastRSSI: Int?
     @Published private(set) var badgeFocusState: Bool?
@@ -45,10 +46,26 @@ final class BeaconMonitor: NSObject, ObservableObject {
         super.init()
         locationManager.delegate = self
         authorizationStatus = locationManager.authorizationStatus
+        accuracyAuthorization = locationManager.accuracyAuthorization
     }
 
     func requestAuthorizationAndStartMonitoring() {
         locationManager.requestAlwaysAuthorization()
+    }
+
+    /// Beacon ranging/monitoring silently produces nothing at all under
+    /// "Approximate" location (a separate per-app toggle from
+    /// Always/When-In-Use, Settings -> Privacy -> Location Services ->
+    /// [app] -> Precise Location). This requests a temporary upgrade to
+    /// full accuracy, which is the Apple-sanctioned way to ask -- there's
+    /// no way to force it permanently from code, only guide the user to
+    /// the Settings toggle if they decline repeatedly.
+    private func requestFullAccuracyIfNeeded() {
+        guard accuracyAuthorization == .reducedAccuracy else { return }
+        locationManager.requestTemporaryFullAccuracyAuthorization(withPurposeKey: "BeaconRanging") { [weak self] _ in
+            guard let self else { return }
+            self.accuracyAuthorization = self.locationManager.accuracyAuthorization
+        }
     }
 
     private func startMonitoring() {
@@ -98,7 +115,9 @@ final class BeaconMonitor: NSObject, ObservableObject {
 extension BeaconMonitor: CLLocationManagerDelegate {
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         authorizationStatus = manager.authorizationStatus
+        accuracyAuthorization = manager.accuracyAuthorization
         if authorizationStatus == .authorizedAlways || authorizationStatus == .authorizedWhenInUse {
+            requestFullAccuracyIfNeeded()
             startMonitoring()
         }
     }

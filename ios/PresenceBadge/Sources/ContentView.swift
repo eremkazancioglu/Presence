@@ -8,6 +8,7 @@ struct ContentView: View {
             Form {
                 Section("Status") {
                     LabeledContent("Location permission", value: authorizationDescription)
+                    LabeledContent("Precise location", value: beaconMonitor.accuracyAuthorization == .fullAccuracy ? "Yes" : "No (beacon detection won't work)")
                     LabeledContent("Foreground ranging", value: beaconMonitor.isRanging ? "Yes" : "No")
                     LabeledContent("Last badge state", value: beaconMonitor.badgeFocusState.map { $0 ? "ON" : "OFF" } ?? "—")
                     LabeledContent("Last RSSI", value: beaconMonitor.lastRSSI.map { "\($0) dBm" } ?? "—")

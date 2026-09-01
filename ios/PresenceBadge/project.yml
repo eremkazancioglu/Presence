@@ -24,6 +24,11 @@ targets:
           background -- this is required for beacon detection to keep
           working outside the app itself. No location data is collected
           or stored.
+        NSLocationTemporaryUsageDescriptionDictionary:
+          BeaconRanging: >-
+            Precise location is required for this app to detect your
+            badge's Bluetooth beacon at all -- without it, beacon
+            detection produces no results.
         UIBackgroundModes:
           - location
         UILaunchScreen: {}
