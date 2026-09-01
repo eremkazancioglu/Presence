@@ -1,12 +1,12 @@
-# Bundled shortcuts — manual step required
+# Bundled shortcuts
 
-This app expects two files here that I can't generate for you — `.shortcut`
-files are a signed binary format only the Shortcuts app itself can produce:
+`BadgeFocusOn.shortcut` and `BadgeFocusOff.shortcut` are here — each is a
+"Set Focus → Do Not Disturb" shortcut (on/off respectively), hand-built in
+the Shortcuts app and exported. `.shortcut` files are a signed binary
+format only the Shortcuts app itself can produce, so if these ever need to
+change, redo the steps below rather than editing the files directly.
 
-- `BadgeFocusOn.shortcut`
-- `BadgeFocusOff.shortcut`
-
-## How to create them (one-time, on your iPhone)
+## How to (re)create them (one-time, on your iPhone)
 
 1. Open the **Shortcuts** app → **+** to create a new shortcut.
 2. Add the **Set Focus** action.
