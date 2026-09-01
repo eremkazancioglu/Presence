@@ -43,11 +43,27 @@ int lastReading = HIGH;
 int debouncedState = HIGH;
 unsigned long lastDebounceTime = 0;
 
+#define WAKE_SETTLE_MS 1200
+
 void toggleFocus() {
   if (!keyboard.isPaired()) {
     Serial.println("Not paired yet -- ignoring press. Pair in Settings > Bluetooth first.");
     return;
   }
+
+  // The badge's own BLE report transmission was confirmed reliable (Serial
+  // + the library's own connection-state log always showed the report
+  // going out) -- the drop happens entirely on the phone's side. This
+  // matches a common cross-platform pattern: the input that wakes a
+  // sleeping device is deliberately not forwarded to whatever would
+  // normally act on it (only used to wake the screen), as a safety
+  // measure against accidental actions right as a device wakes. F13 is
+  // unbound to any Full Keyboard Access command, so it's harmless even if
+  // it *does* get processed -- its only job is to wake the phone, with a
+  // real settle delay before we send the command that actually matters.
+  Serial.println("Sending wake keystroke (F13, unbound)...");
+  keyboard.tap(KEY_F13);
+  delay(WAKE_SETTLE_MS);
 
   focusActive = !focusActive;
   // F13/F14 turned out not to be reliably distinguished by iOS's Full
