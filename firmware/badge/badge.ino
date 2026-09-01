@@ -50,8 +50,13 @@ void toggleFocus() {
   }
 
   focusActive = !focusActive;
-  Serial.printf("Focus %s -- sending %s\n", focusActive ? "ON" : "OFF", focusActive ? "F13" : "F14");
-  keyboard.tap(focusActive ? KEY_F13 : KEY_F14);
+  // F13/F14 turned out not to be reliably distinguished by iOS's Full
+  // Keyboard Access command recorder (both attempts recorded as the same
+  // binding) -- switched to standard letter keys with modifiers, which
+  // should be unambiguous.
+  uint8_t modifiers = KEY_MOD_LCTRL | KEY_MOD_LALT;
+  Serial.printf("Focus %s -- sending Ctrl+Option+%s\n", focusActive ? "ON" : "OFF", focusActive ? "O" : "F");
+  keyboard.tap(focusActive ? KEY_O : KEY_F, modifiers);
 }
 
 void setup() {
