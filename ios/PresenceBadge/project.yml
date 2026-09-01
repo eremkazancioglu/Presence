@@ -21,6 +21,10 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+        CFBundleURLTypes:
+          - CFBundleURLName: com.eremkazancioglu.PresenceBadge
+            CFBundleURLSchemes:
+              - presencebadge
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.eremkazancioglu.PresenceBadge

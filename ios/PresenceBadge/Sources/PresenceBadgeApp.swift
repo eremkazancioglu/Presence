@@ -7,10 +7,18 @@ struct PresenceBadgeApp: App {
 
     var body: some Scene {
         WindowGroup {
-            if onboardingComplete {
-                ContentView(scanner: scanner)
-            } else {
-                OnboardingView(onboardingComplete: $onboardingComplete)
+            Group {
+                if onboardingComplete {
+                    ContentView(scanner: scanner)
+                } else {
+                    OnboardingView(onboardingComplete: $onboardingComplete)
+                }
+            }
+            .onOpenURL { url in
+                // Shortcuts hands control back here via x-success once the
+                // Set Focus shortcut finishes (see FocusTrigger). Nothing to
+                // do with it beyond returning focus to this app.
+                print("Returned from Shortcuts: \(url)")
             }
         }
     }

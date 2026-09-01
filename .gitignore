@@ -14,3 +14,4 @@ ios/PresenceBadge/PresenceBadge.xcodeproj/
 ios/PresenceBadge/Resources/Info.plist
 xcuserdata/
 *.xcuserstate
+.DS_Store
