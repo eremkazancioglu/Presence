@@ -1,28 +1,22 @@
 // Bedside Focus Badge — phase 1 firmware
 //
-// Reads a momentary push button. The badge is a real BLE HID keyboard
-// (via the HijelHID_BLEKeyboard library) -- but only to get iOS's
-// HID-specific treatment: proper Settings > Bluetooth pairing visibility,
-// and genuine system-level auto-reconnect with no app running. It never
-// actually sends keystrokes. Instead, the button toggles the BLE
-// *connection* itself: "on" resumes advertising (bonded auto-reconnect
-// completes a connection), "off" actively disconnects. A native Shortcuts
-// personal automation ("When Bluetooth device connects/disconnects")
-// reacts to those two events to toggle Focus mode.
+// Reads a momentary push button. The badge is a BLE HID keyboard (via the
+// HijelHID_BLEKeyboard library), staying continuously connected once
+// paired -- like a real Bluetooth keyboard, not toggling connect/
+// disconnect per press. Each press sends one distinct keystroke: F13 for
+// "on", F14 for "off". On the phone, Settings -> Accessibility ->
+// Keyboards & Typing -> Full Keyboard Access -> Commands binds each key to
+// a Shortcut (Badge Focus On / Badge Focus Off) natively, with no app
+// needed at all -- this fires reliably even while the phone is locked
+// (verified empirically with a real Bluetooth accessory before committing
+// to this design).
 //
-// This supersedes three earlier designs -- broadcast-only/iBeacon,
-// bonded connect/disconnect on a plain (non-HID) peripheral, and HID
-// keyboard actually sending keystrokes. The keystroke-sending version
-// worked at the BLE level but iOS silently discards (redirects to the
-// unlock screen instead of processing) any external keyboard input while
-// the phone is locked -- a hard security boundary, not fixable from
-// firmware. Bluetooth connect/disconnect events aren't gated by lock
-// state the same way (verified empirically with a real Bluetooth
-// accessory), which is why this design goes back to connect/disconnect
-// as the actual signal, just using genuine HID classification (unlike
-// the second design's Heart Rate Service masquerade) to get real
-// app-free auto-reconnect. See CLAUDE.md's Architecture decisions for
-// the full investigation.
+// This supersedes two earlier designs: broadcast-only/iBeacon (background
+// detection via CoreLocation didn't work reliably), and bonded connect/
+// disconnect toggling (regular BLE peripherals don't get iOS's app-free
+// auto-reconnect treatment -- only recognized classes like HID and audio
+// devices do, which is exactly why this design uses real HID). See
+// CLAUDE.md's Architecture decisions for the full investigation.
 //
 // Board: Seeed Studio XIAO ESP32C6
 // Libraries: NimBLE-Arduino (h2zero), HijelHID_BLEKeyboard (Hijel) —
@@ -49,20 +43,39 @@ int lastReading = HIGH;
 int debouncedState = HIGH;
 unsigned long lastDebounceTime = 0;
 
-void toggleFocus() {
-  focusActive = !focusActive;
-  Serial.printf("Focus %s\n", focusActive ? "ON" : "OFF");
+#define WAKE_SETTLE_MS 1200
+#define REPEAT_ATTEMPTS 4
+#define REPEAT_GAP_MS 400
 
-  if (focusActive) {
-    // Resumes advertising; since the phone already trusts this bonded
-    // HID device, iOS reconnects automatically -- that reconnection is
-    // the "device connects" event the Shortcuts automation reacts to.
-    keyboard.begin();
-  } else {
-    // Actively disconnects (a live connection isn't advertising anyway,
-    // so merely stopping advertising wouldn't drop it) and stops
-    // advertising, so nothing reconnects until the next "on" press.
-    keyboard.end();
+void toggleFocus() {
+  if (!keyboard.isPaired()) {
+    Serial.println("Not paired yet -- ignoring press. Pair in Settings > Bluetooth first.");
+    return;
+  }
+
+  focusActive = !focusActive;
+  // F13/F14 turned out not to be reliably distinguished by iOS's Full
+  // Keyboard Access command recorder (both attempts recorded as the same
+  // binding) -- switched to standard letter keys with modifiers, which
+  // should be unambiguous.
+  uint8_t modifiers = KEY_MOD_LCTRL | KEY_MOD_LALT;
+  uint8_t targetKey = focusActive ? KEY_O : KEY_F;
+  Serial.printf("Focus %s -- sending Ctrl+Option+%s (repeated, idempotent)\n", focusActive ? "ON" : "OFF", focusActive ? "O" : "F");
+
+  // Real command delivery to a locked/sleeping phone turned out to be
+  // unreliable on any single attempt -- observed empirically to
+  // eventually "take hold" after a few tries. Since Set Focus is
+  // idempotent (applying "on" repeatedly has the same effect as once),
+  // it's safe to just resend the same target state several times rather
+  // than trying to precisely detect success. F13 (unbound to any Full
+  // Keyboard Access command) wakes the phone first each round -- its only
+  // job is to wake the screen, harmless even if it does get processed.
+  for (int attempt = 1; attempt <= REPEAT_ATTEMPTS; attempt++) {
+    Serial.printf("Attempt %d/%d: wake (F13) + real command...\n", attempt, REPEAT_ATTEMPTS);
+    keyboard.tap(KEY_F13);
+    delay(WAKE_SETTLE_MS);
+    keyboard.tap(targetKey, modifiers);
+    delay(REPEAT_GAP_MS);
   }
 }
 
@@ -71,10 +84,16 @@ void setup() {
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
   keyboard.setLogLevel(HIDLogLevel::Normal);
+  // A longer hold (900ms) was tried to address a theory about BLE idle
+  // timing that later testing ruled out -- the actual issue turned out to
+  // be phone-side handling of input while locked/sleeping (see
+  // toggleFocus()'s repeat-attempts comment), not report delivery timing.
+  // Modest increase over the 25ms default kept as a small safety margin
+  // without blowing up total time across REPEAT_ATTEMPTS.
+  keyboard.setTapDelay(100);
   keyboard.begin();
 
-  Serial.println("Badge ready, OFF. Pair via Settings > Bluetooth, then press to toggle.");
-  keyboard.end();
+  Serial.println("Badge ready. Pair via Settings > Bluetooth, then press to toggle focus.");
 }
 
 void loop() {
@@ -95,16 +114,4 @@ void loop() {
   }
 
   lastReading = reading;
-
-  // Self-heal an unintended drop (RF interference, brief range loss)
-  // while still meant to be ON: re-arm advertising so the phone's bonded
-  // auto-reconnect can complete again, without waiting for another
-  // button press. begin() is a documented no-op if already
-  // advertising/connected, so this is safe to check repeatedly.
-  static unsigned long lastReconnectCheck = 0;
-  if (focusActive && !keyboard.isPaired() && millis() - lastReconnectCheck > 1000) {
-    lastReconnectCheck = millis();
-    Serial.println("Still meant to be ON but not connected -- re-arming advertising.");
-    keyboard.begin();
-  }
 }
