@@ -24,9 +24,16 @@ passively.
 **Why we expected it to work:** simplest possible design, no pairing UX
 friction, works for any number of listening devices independently.
 
-**Result:** worked perfectly in the foreground (verified with a laptop
-`bleak` scanner and, later, a custom iOS app). Foreground was never the
-problem — background/locked-phone reliability was, and this design had
+**Result:** the badge's own broadcast worked correctly — verified with a
+laptop `bleak` scanner (`scripts/scan.py`), which correctly printed
+`Focus ON`/`Focus OFF` as the state toggled. An iOS companion app was
+scaffolded to react to this broadcast, but it was never actually tested
+end-to-end against this design — the architecture pivoted to iBeacon (see
+below) in the very next round of changes, before the original
+CoreBluetooth-based app scanner had been verified working. So "foreground
+worked" is true of the firmware/broadcast itself, not of the full
+badge-to-phone chain under this specific design. Background/locked-phone
+reliability was the reason for the pivot regardless, and this design had
 no path to it at all: raw CoreBluetooth background scanning on iOS is
 throttled too heavily to be usable (roughly one discovery callback per
 peripheral per background scan cycle, no delivery guarantee).
