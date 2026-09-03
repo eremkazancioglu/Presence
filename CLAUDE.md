@@ -31,18 +31,27 @@ simple and don't over-build for anticipated future requirements.
 
 - Hardware ordered: Seeed Studio XIAO ESP32C6 (pre-soldered), tactile
   push buttons, mini breadboards (170-point), jumper wire kit (M-M and M-F).
-  Tactile button itself hasn't arrived yet.
-- Firmware has gone through six designs chasing reliable
-  background/locked-phone behavior — full history in
+  Tactile button itself hasn't arrived yet. **Second board added:** a
+  plain ESP32-WROOM-32 DevKit (AITRIP, CP2102 USB-UART bridge) — needed
+  because the final trigger design requires Classic Bluetooth (BR/EDR),
+  which the XIAO ESP32C6 doesn't have (it's BLE-only).
+- Firmware went through seven designs chasing a trigger mechanism that's
+  both reliable *and* actually acceptable to use — full history in
   [docs/trigger-mechanism-investigation.md](docs/trigger-mechanism-investigation.md).
-  **Current design (BLE HID keyboard, Ctrl+Option+O/F keystrokes, sent
-  redundantly since delivery isn't reliable on one attempt while locked)
-  is verified working end-to-end on real hardware**, including with the
-  phone locked.
-- **Gotcha:** on the XIAO ESP32C6, silkscreen pin labels don't map 1:1 to
-  raw GPIO numbers in Arduino code (e.g. label `D9` is actually GPIO20,
-  not GPIO9). Always reference pins via the `D#` macros in code, not raw
-  GPIO numbers, so the pin in code matches the pin printed on the board.
+  **Current, final design: a Classic Bluetooth HID (Keyboard-class)
+  device, button-driven connect/disconnect, reacted to by a native
+  Shortcuts "Bluetooth device connects/disconnects" automation — no app,
+  no Full Keyboard Access. Verified working end-to-end on real hardware,
+  including with the phone locked.** This supersedes the earlier
+  BLE-HID-keystrokes-plus-Full-Keyboard-Access design, which worked but
+  had a real ongoing UX cost (a persistent on-screen highlight box) that
+  makes it a poor fit for distributing to many users.
+- **Gotcha (XIAO ESP32C6 only, not the WROOM-32):** silkscreen pin labels
+  don't map 1:1 to raw GPIO numbers in Arduino code (e.g. label `D9` is
+  actually GPIO20, not GPIO9). Always reference pins via the `D#` macros
+  in code, not raw GPIO numbers, so the pin in code matches the pin
+  printed on the board. The plain ESP32-WROOM-32 DevKit doesn't have this
+  quirk — its `D#` silkscreen labels are the real GPIO numbers.
 - iOS companion app (`ios/`, SwiftUI + xcodegen) builds and runs on real
   hardware; its own foreground behavior (badge -> app -> Set Focus
   shortcut -> Do Not Disturb) was verified working under the first
@@ -53,12 +62,20 @@ simple and don't over-build for anticipated future requirements.
 
 ## Hardware
 
-- **MCU:** Seeed Studio XIAO ESP32C6 (pre-soldered headers), USB-C.
-  Chosen for fast shipping availability over the nRF52840 (which was the
-  original preference for its lower power draw, but wasn't available with
-  fast shipping). BLE 5.3 capable, which is all that's needed for phase 1.
+- **MCU (current, for the trigger mechanism): plain ESP32-WROOM-32 DevKit**
+  (AITRIP brand, CP2102 USB-UART bridge, 30-pin), USB-C. Needed because
+  the final trigger design (see Architecture decisions) requires Classic
+  Bluetooth (BR/EDR) HID, which only the original ESP32 silicon has —
+  the C3/C6/H2/S2 family (including the XIAO ESP32C6 below) is BLE-only.
+- **MCU (original, no longer used for the trigger mechanism):** Seeed
+  Studio XIAO ESP32C6 (pre-soldered headers), USB-C. Chosen originally
+  for fast shipping availability over the nRF52840. Its firmware
+  (`firmware/badge/badge.ino`, the BLE-HID-keystrokes-plus-Full-Keyboard-Access
+  design) still works and remains in the repo, but is superseded — see
+  Architecture decisions.
 - **Input:** single tactile momentary push button (through-hole, breadboard
-  friendly).
+  friendly). Not yet wired on either board — temporary jumper-to-GND used
+  for testing (see each board's setup instructions).
 - **Power:** USB-powered for now. No battery yet — that's a deliberate
   simplification for this phase; revisit once core logic works.
 - **Prototyping:** mini breadboard + male-to-male and male-to-female jumper
@@ -66,73 +83,83 @@ simple and don't over-build for anticipated future requirements.
 
 ## Architecture decisions made so far
 
-**Full investigation history:** six designs were tried in sequence before
-landing on one that actually works reliably in the badge's real use case
-(phone locked/pocketed) — see
+**Full investigation history:** seven designs were tried in sequence
+before landing on one that's both reliable *and* actually acceptable to
+use day to day — see
 [docs/trigger-mechanism-investigation.md](docs/trigger-mechanism-investigation.md)
 for the complete narrative (what was tried, why, what broke, evidence).
 Condensed summary below.
 
-- **Current, working design: real BLE HID keyboard, sending actual
-  keystrokes, bound via a native OS-level key binding — no app, no
-  automation.** Built with the `HijelHID_BLEKeyboard` Arduino library.
-  Pairs once via Settings → Bluetooth, stays continuously connected like a
-  real keyboard. Each press sends **Ctrl+Option+O** ("on") or
-  **Ctrl+Option+F** ("off") — standard letter keys with modifiers, not
-  F13/F14 (those weren't reliably distinguished by iOS's Full Keyboard
-  Access command recorder — both bindings recorded identically, blocking
-  the second assignment). On the phone: Settings → Accessibility →
-  Keyboards & Typing → Full Keyboard Access → Commands binds each key
-  directly to a Shortcut.
-  - **Delivery isn't reliable on a single attempt while the phone is
-    locked/sleeping** — external keyboard input received while locked
-    doesn't get processed outright (it redirects to the Face ID/passcode
-    screen), though testing showed it's intermittent rather than an
-    absolute block (repeated taps while still on the lock screen
-    eventually "take hold"). Fix: since Set Focus is idempotent,
-    `toggleFocus()` resends the same target-state command up to 4 times
-    (each preceded by an unbound "wake" keystroke and a real settle
-    delay) instead of once — costs a few extra seconds on the first press
-    after idle, acceptable given the actual use case.
-  - **Considered and rejected:** making the badge stateless (one blind
-    toggle keystroke) with a phone-side Shortcut reading `Get Current
-    Focus` to decide which way to flip — would eliminate the (rare) risk
-    of the badge's local on/off tracking drifting from the phone's actual
-    state if something else changes Focus externally. Rejected because a
-    toggle isn't idempotent — repeating a blind toggle for delivery
-    reliability can land on the wrong final state depending on how many
-    of the repeated attempts actually get through, which is
-    unpredictable. Incompatible with the repeat-delivery fix above; kept
-    the stateful, explicit-set-command design.
-  - **Self-healing reconnects:** an involuntary BLE disconnect (RF
-    interference, brief range loss) is handled entirely automatically by
-    the HID library (`_onDisconnect()` calls `startAdvertising()`
-    immediately) — independent of button presses, and doesn't affect the
-    phone's current Focus state at all, since keystrokes are only sent in
-    direct response to a press, not connection events.
-- **Why not a Shortcuts automation reacting to BLE connect/disconnect
-  (tried, and does work for other device types — just not this one):** a
-  bonded badge toggling its own connection state, reacted to by a native
-  "When Bluetooth device connects/disconnects" automation, would avoid
-  needing any keystrokes at all. The automation-fires-while-locked premise
-  is genuinely correct (verified with a real Bluetooth headphone
-  accessory — fired reliably whether locked or unlocked). But two
-  separate problems killed it for this badge specifically: (1) a plain
-  custom BLE peripheral doesn't appear in Settings → Bluetooth at all
-  (worked around by masquerading as a Heart Rate device, an "adopted"
-  GATT service iOS does list — the properly-sanctioned fix,
-  `AccessorySetupKit`, needs an Apple-approved managed entitlement not
-  available for this prototype); and (2) even once paired, iOS doesn't
-  auto-reconnect a generic BLE peripheral without an app running — only
-  recognized classes (HID, audio) get that treatment app-free. Rebuilding
-  the badge as genuine HID (to clear problem 2) solved the connection
-  reliability but hit a *third*, apparently harder wall: the Shortcuts
-  automation never recognized the connect/disconnect events at all, even
-  with "Any Device" selected and the connection confirmed genuinely
-  happening at the OS level — likely because Shortcuts' Bluetooth
-  automation may only recognize Classic Bluetooth, and the XIAO ESP32C6 is
-  BLE-only hardware with no Classic radio at all. Full details in the
-  investigation doc.
+- **Current, final design: a Classic Bluetooth (BR/EDR) HID device
+  (Keyboard class), button-driven connect/disconnect, reacted to by a
+  native Shortcuts "Bluetooth device connects/disconnects" automation —
+  no app, no Full Keyboard Access, no keystrokes ever sent.** Runs on a
+  plain ESP32-WROOM-32 (not the XIAO ESP32C6 — see Hardware). Boots
+  non-discoverable; first press goes connectable/discoverable for
+  one-time pairing via Settings → Bluetooth; each later press either
+  actively connects (fires the automation's "connects" trigger) or
+  actively disconnects (fires "disconnects") depending on current state;
+  after a disconnect it deliberately does *not* auto-reconnect — stays
+  off until the next press. The Shortcuts automation runs the same
+  `Badge Focus On`/`Badge Focus Off` shortcuts as before. **Verified
+  working end-to-end on real hardware, including with the phone locked.**
+  - **Why Classic BT, not BLE (design 6's dead end, resolved):** design 6
+    concluded the Bluetooth automation likely only recognizes Classic
+    Bluetooth, based on indirect evidence, since the XIAO ESP32C6 (the
+    only badge hardware at the time) is BLE-only and could never test
+    this directly. That was directly confirmed later by manually adding a
+    real Classic-BT accessory (a DualShock controller) to the automation
+    and seeing it fire — proof the automation isn't restricted to
+    audio/car devices, just to Classic Bluetooth generally. This is why a
+    second board (plain ESP32, which — unlike the C3/C6/S3 family — has a
+    BR/EDR radio) was introduced.
+  - **Why Keyboard HID class, not Mouse:** first attempt used the same
+    "Mouse" class as Espressif's own official Classic BT HID example —
+    it never appeared in Settings → Bluetooth's Other Devices list at
+    all. Switching to Keyboard class (matching both our own already-proven
+    BLE keyboard design and the DualShock/headphone precedent) fixed it
+    immediately. iOS's Classic BT pairing UI appears not to support
+    generic HID mice the way it does keyboards and game controllers.
+  - **Toolchain:** the Classic BT HID Device API isn't exposed by the
+    Arduino-ESP32 core at all (needs a `menuconfig` option Arduino's
+    precompiled build doesn't support). This firmware
+    (`firmware/experiments/classic_bt_hid_switch/`) is a full ESP-IDF
+    project (`idf.py build/flash`), not an Arduino sketch — the only
+    firmware in this repo built that way. ESP-IDF is a separate toolchain
+    from the Arduino IDE used for everything else; see the investigation
+    doc for setup notes.
+- **Superseded: real BLE HID keyboard, sending actual keystrokes via
+  Full Keyboard Access (`firmware/badge/badge.ino`, still in the repo,
+  still works).** This was the previous "final" design — genuinely
+  verified working locked, via `HijelHID_BLEKeyboard`, sending
+  Ctrl+Option+O/F (repeated idempotently for delivery reliability) bound
+  through Settings → Accessibility → Full Keyboard Access → Commands.
+  Abandoned as the recommended design (not deleted — it's a real fallback)
+  because Full Keyboard Access isn't just a one-time setup step: while
+  it's on, iOS permanently shows a visible highlight box around whatever
+  UI element has keyboard focus, on every screen, not only while actively
+  navigating — a real ongoing UX cost, not a one-time cost, and a poor
+  fit for distributing to many users who'd each need to discover an
+  Accessibility feature most people have never opened. Full detail
+  (including the F13/F14 command-recorder bug and the repeat-delivery
+  fix) in the investigation doc.
+- **Other avenues tried and ruled out while searching for a
+  no-Full-Keyboard-Access alternative** (full detail in the investigation
+  doc): **HomeKit** (button → Home Automation → Run Shortcut) — dead on
+  two counts, HomeSpan (the realistic no-MFi-certification path) only
+  supports WiFi/Ethernet HAP, not BLE, and HomeKit automations require a
+  Home Hub per user regardless. **WiFi network connect/disconnect
+  automation** (badge as its own WiFi AP) — killed by phones only holding
+  one WiFi association at a time, which would contend with hospital
+  staff/guest WiFi. **An app registering itself as a custom Shortcuts
+  automation trigger** — not possible; trigger types are a fixed list
+  Apple defines. **CoreBluetooth background `open()` with state
+  restoration** — re-tested whether calling `UIApplication.open()` from a
+  CoreBluetooth (rather than CLMonitor) background callback behaves
+  differently; state restoration never actually engaged, and a
+  from-cold connection attempt never completed before the app was
+  suspended, so this was never even conclusively tested against the
+  `open()` restriction itself.
 - **Why not a custom iOS app watching BLE/iBeacon advertisements (tried
   and abandoned):** built a full custom SwiftUI app (`ios/` — still in the
   repo as a foreground debug tool, not load-bearing) using iBeacon
@@ -143,8 +170,9 @@ Condensed summary below.
   `CLMonitor` did deliver them, but surfaced a separate hard blocker: a
   backgrounded app cannot call `UIApplication.open(_:)` to hand off to
   Shortcuts at all (`LSApplicationWorkspaceErrorDomain` code 115) — an
-  intentional security boundary, not fixable from app code. Full details
-  in the investigation doc.
+  intentional security boundary, not fixable from app code. This is the
+  same restriction that later ruled out the CoreBluetooth revisit above.
+  Full details in the investigation doc.
 - **iOS Focus toggling still goes through a pre-built Shortcut, not a
   direct API call.** No public iOS API lets a third-party app, automation,
   or key binding toggle Focus mode directly — only Shortcuts' own "Set
@@ -183,17 +211,19 @@ Condensed summary below.
 - ~~Exact BLE payload/UUID scheme~~ — superseded: no longer a broadcast
   payload at all under the current HID design. See `docs/ble-protocol.md`.
 - ~~Whether to build a real companion app or rely on Shortcuts/Tasker
-  indefinitely~~ — revisited three times, landed on neither: the final
-  answer is a native OS-level key binding (Full Keyboard Access), not an
-  app, a third-party Shortcuts trigger app, or even a Shortcuts
-  automation. See Architecture decisions above for the full path there.
-  The custom app remains in the repo as a working foreground
-  tool/foundation, not abandoned, just not load-bearing for phase 1.
+  indefinitely~~ — revisited many times, landed on neither: the final
+  answer is a native Shortcuts personal automation reacting to Classic
+  Bluetooth connect/disconnect events, not an app, a third-party
+  Shortcuts trigger app, or a key binding. See Architecture decisions
+  above for the full path there (including the Full Keyboard Access
+  design that worked but was superseded). The custom app remains in the
+  repo as a working foreground tool/foundation, not abandoned, just not
+  load-bearing for phase 1.
 - Per-badge unique identity — not needed while only one badge exists.
-  Under the current HID design this would mean a distinct
-  name/keystroke-pair per badge, and each wearer's Full Keyboard Access
-  bindings pointing at their own badge's keys specifically. Needs real
-  design once more than one badge is in use.
+  Under the current Classic BT design this would mean a distinct device
+  name per badge, and each wearer's Shortcuts automation pointing at
+  their own badge's name specifically. Needs real design once more than
+  one badge is in use.
 - Android version — DND can be toggled via a direct public API
   (`NotificationManager.setInterruptionFilter` + one-time "Notification
   Policy Access" permission), no Shortcuts-style indirection needed. Real

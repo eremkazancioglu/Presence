@@ -1,12 +1,13 @@
 # Trigger mechanism investigation
 
 How the badge actually tells the phone to toggle Focus mode went through
-six real designs before landing on one that works reliably. This
-document walks through the full investigation in order: what we tried,
-why we expected it to work, what we found, and why it failed (or didn't).
-CLAUDE.md's "Architecture decisions" section has the condensed version;
-this is the detailed history, useful if this project ever needs to be
-revisited, ported to Android, or re-explained from scratch.
+seven real designs before landing on one that's both reliable and
+actually acceptable to use. This document walks through the full
+investigation in order: what we tried, why we expected it to work, what
+we found, and why it failed (or didn't). CLAUDE.md's "Architecture
+decisions" section has the condensed version; this is the detailed
+history, useful if this project ever needs to be revisited, ported to
+Android, or re-explained from scratch.
 
 **The core constraint that shaped everything:** the badge's whole point
 is working while the phone is locked and pocketed — a nurse presses it
@@ -242,6 +243,131 @@ which is unpredictable. The two ideas are fundamentally incompatible;
 keeping the stateful, explicit-set-command design was the correct call
 given the reliability fix already works.
 
+## The friction problem with design 5, and the search for an alternative
+
+Design 5 (hardened) was real and it worked — verified end-to-end on real
+hardware, including locked. But it has a UX cost that only became
+apparent using it day to day: **Full Keyboard Access isn't just a
+one-time setup step.** While it's on, iOS permanently shows a visible
+highlight box around whatever UI element currently has keyboard focus —
+not only while actively navigating with the keyboard, but at all times,
+on every screen. Tuning FKA's Visual Options (fastest auto-hide, muted
+highlight color) reduces this but can't remove it. For a badge meant to
+be distributed to many hospital staff, each of whom would need to
+discover and enable an Accessibility feature most people have never
+opened, then live with a persistent visual side effect, this is real,
+ongoing friction — not a one-time setup cost.
+
+This prompted a broad search for any other native, hands-free trigger
+mechanism, none of which panned out:
+
+- **HomeKit** (button-press accessory → Home Automation → "Run Shortcut"
+  action): dead on two independent counts. HomeSpan (the realistic
+  hobbyist path to a HomeKit-compliant accessory without MFi
+  certification) only implements HAP over WiFi/Ethernet, not BLE — our
+  badge is BLE-only hardware. And separately, HomeKit automations
+  (not just remote control) require a Home Hub (HomePod/Apple TV) to run
+  at all — a non-starter for distributing to many users, each of whom
+  would need their own hub.
+- **Wi-Fi network connect/disconnect automation** (badge runs as a WiFi
+  AP, phone auto-joins/leaves it): killed by a simple real-world fact —
+  a phone can only hold one active WiFi association at a time, and a
+  hospital-employed wearer's phone is very likely already joined to
+  hospital staff/guest WiFi, which would contend with the badge's own
+  network for that one slot.
+- **An app acting as a custom Shortcuts automation trigger source**:
+  not possible at all — Shortcuts' Personal Automation trigger types
+  (Time, Location, NFC, WiFi, Bluetooth connect/disconnect, Focus
+  changes, etc.) are a fixed list Apple defines; there's no API for a
+  third-party app to register a new trigger type, for the same
+  abuse-prevention reason background apps can't call `open()` (design 3).
+- **CoreBluetooth background `open()`, revisited with state restoration**:
+  re-tested whether `UIApplication.open()` behaves differently when
+  called from a CoreBluetooth background delegate callback (under the
+  `bluetooth-central` background mode) rather than CLMonitor's
+  location-based wake, on the theory that it's a different OS-granted
+  execution context. Added `CBCentralManagerOptionRestoreIdentifierKey`
+  state restoration to survive the app being killed while backgrounded.
+  Result: state restoration never actually engaged (`bluetoothCentrals`
+  never appeared as a launch option across many cycles) and a fresh
+  connection attempt initiated from the background consistently never
+  completed (no `didConnect`, no `didFailToConnect`) before the process
+  was suspended — so the `open()` question was never even reached. Even
+  setting that aside, the design-3 finding (backgrounded apps can never
+  call `open()`, full stop) would have blocked it regardless.
+
+The common thread across every one of these: the only things that
+reliably survive a locked phone are **OS-level automation reacting to a
+natively-recognized event type**, never a third-party app in the loop.
+Full Keyboard Access's Commands feature is one such native trigger.
+Design 7, below, found another.
+
+## 7. Classic Bluetooth (BR/EDR) HID device + connect/disconnect
+
+**The insight that reopened this:** design 6 concluded that Shortcuts'
+"Bluetooth device connects/disconnects" automation likely only recognizes
+**Classic Bluetooth (BR/EDR)**, not BLE — and every badge built so far,
+including the XIAO ESP32C6, is BLE-only hardware with no Classic radio at
+all, so this was never actually tested against a device that could prove
+or disprove it. That changed when a real Classic-BT-capable accessory (a
+DualShock controller) was manually added to the automation's device list
+and confirmed to fire the automation reliably — direct proof the
+automation isn't restricted to audio/car devices as design 6 might have
+suggested, just to Classic Bluetooth generally.
+
+**Design:** a plain ESP32-WROOM-32 (an AITRIP DevKit board with a CP2102
+USB-UART bridge — not the XIAO ESP32C6, which has no BR/EDR radio) runs
+as a genuine Classic Bluetooth HID device. Button-driven, same shape as
+design 4/6: press while disconnected actively connects (or, before any
+pairing has happened, goes connectable/discoverable so the phone can pair
+via Settings → Bluetooth); press while connected actively disconnects;
+after a disconnect it deliberately stays non-connectable/non-discoverable
+until the next press — no auto-reconnect. A **native Shortcuts Bluetooth
+automation** (identical in kind to the DualShock/headphone precedent)
+reacts to the connect/disconnect events directly — no app, no Full
+Keyboard Access.
+
+**Toolchain note:** the Classic BT HID Device API
+(`esp_bt_hid_device_*`, ESP-IDF's Bluedroid `bt` component) isn't exposed
+by the Arduino-ESP32 core at all — it requires enabling "Classic BT HID
+Device" in `idf.py menuconfig`, which Arduino's precompiled build doesn't
+support changing. This firmware (`firmware/experiments/classic_bt_hid_switch/`)
+is a full ESP-IDF project (`idf.py build/flash`), not an Arduino sketch —
+a real departure from every other firmware in this repo, kept as an
+ESP-IDF project specifically for this reason. Adapted from Espressif's
+own official example, `examples/bluetooth/bluedroid/classic_bt/bt_hid_mouse_device`.
+
+**Debugging along the way:**
+- First attempt presented as a **Mouse**-class HID device (matching the
+  official example's own device class, on the assumption any working
+  Classic BT HID class would do) — it never appeared in Settings →
+  Bluetooth's Other Devices list at all, even waiting a full minute with
+  the screen open. Switched to **Keyboard** class (COD minor +
+  descriptor + subclass), matching both our own already-proven BLE
+  keyboard design and the DualShock/headphone precedent (game
+  controller and audio, not a generic pointing device) — it appeared
+  immediately. iOS's Classic BT pairing UI appears not to support
+  generic HID mice the way it does keyboards and game controllers.
+- Pairing a Keyboard-class device while Full Keyboard Access happened to
+  still be enabled (left on from design 5 testing earlier the same day)
+  brought back the same persistent highlight box — a red herring, not a
+  new problem: FKA reacts to *any* connected external keyboard
+  regardless of what triggered the pairing. Turning FKA off (it isn't
+  needed by this design at all — no keystrokes are ever sent, only
+  connect/disconnect events) confirmed the highlight has nothing to do
+  with this design specifically.
+
+**Result: confirmed working end-to-end, including with the phone
+locked** — connect and disconnect each fire the Shortcuts automation
+reliably, with Full Keyboard Access off and no app involved at any point.
+This is the first design in the whole investigation that is
+simultaneously hands-free, works locked, needs no app, and needs no
+Accessibility feature with an ongoing UX cost.
+
+**Hardware implication:** this design needs a Classic-BT-capable chip
+(original ESP32, ESP32-S3, etc.), not the BLE-only XIAO ESP32C6 the
+project started with. See CLAUDE.md for the updated hardware section.
+
 ## Summary table
 
 | # | Design | Background/locked result |
@@ -252,4 +378,6 @@ given the reliability fix already works.
 | 4 | Bonded connect/disconnect + Shortcuts automation (Heart Rate masquerade) | Automation fires fine while locked; badge never gets reconnect-capable |
 | 5 | HID keyboard, real keystrokes + Full Keyboard Access | Works, but unreliable on a single attempt while locked |
 | 6 | HID classification + connect/disconnect (no keystrokes) | Connection works; automation never recognizes it at all |
-| **5, hardened** | HID keystrokes, repeated idempotently | **Works reliably** |
+| 5, hardened | HID keystrokes, repeated idempotently | Works reliably, but Full Keyboard Access's persistent highlight is real ongoing UX friction |
+| (detours) | HomeKit, WiFi automation, app-as-trigger, CoreBluetooth background `open()` | All dead ends — see above |
+| **7** | **Classic BT HID (Keyboard class) + connect/disconnect, native Bluetooth automation** | **Works reliably, hands-free, no app, no Full Keyboard Access** |

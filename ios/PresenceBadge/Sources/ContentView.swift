@@ -2,10 +2,44 @@ import SwiftUI
 
 struct ContentView: View {
     @ObservedObject var beaconMonitor: BeaconMonitor
+    @ObservedObject var centralTestMonitor: CentralConnectionMonitor
+    @State private var centralTestLog = ""
 
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Text(centralTestMonitor.statusDescription)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button("Start background-open() test") {
+                        centralTestMonitor.start()
+                    }
+                    Button("Refresh log") {
+                        centralTestLog = centralTestMonitor.readLog()
+                    }
+                    Button("Clear log", role: .destructive) {
+                        centralTestMonitor.clearLog()
+                        centralTestLog = ""
+                    }
+                    if !centralTestLog.isEmpty {
+                        ShareLink(item: centralTestLog) {
+                            Label("Share log", systemImage: "square.and.arrow.up")
+                        }
+                        ScrollView {
+                            Text(centralTestLog)
+                                .font(.system(.footnote, design: .monospaced))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                        }
+                        .frame(maxHeight: 300)
+                    }
+                } header: {
+                    Text("Experiment: CoreBluetooth background open()")
+                } footer: {
+                    Text("Tests whether UIApplication.open() works from a CBCentralManager didConnect/didDisconnect callback while locked. Flash firmware/experiments/central_bg_test/ to the badge first, tap Start, then lock the phone and press the badge's button. Tap Refresh log after to see results.")
+                }
+
                 Section("Status") {
                     LabeledContent("Location permission", value: authorizationDescription)
                     LabeledContent("Precise location", value: beaconMonitor.accuracyAuthorization == .fullAccuracy ? "Yes" : "No (beacon detection won't work)")

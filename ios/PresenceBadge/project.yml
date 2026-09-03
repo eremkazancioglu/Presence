@@ -29,8 +29,13 @@ targets:
             Precise location is required for this app to detect your
             badge's Bluetooth beacon at all -- without it, beacon
             detection produces no results.
+        NSBluetoothAlwaysUsageDescription: >-
+          Presence Badge uses Bluetooth to connect directly to your
+          bedside focus badge as an experiment in triggering Focus mode
+          without Full Keyboard Access.
         UIBackgroundModes:
           - location
+          - bluetooth-central
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

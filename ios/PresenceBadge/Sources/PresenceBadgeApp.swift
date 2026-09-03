@@ -2,15 +2,25 @@ import SwiftUI
 
 @main
 struct PresenceBadgeApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var beaconMonitor = BeaconMonitor()
+    @StateObject private var centralTestMonitor = CentralConnectionMonitor()
     @AppStorage("onboardingComplete") private var onboardingComplete = false
     @Environment(\.scenePhase) private var scenePhase
+
+    init() {
+        // Must run unconditionally at launch, not behind a button tap or
+        // onAppear -- an OS-triggered background relaunch for CoreBluetooth
+        // state restoration has no user interaction to wait for. See
+        // CentralConnectionMonitor.start().
+        _centralTestMonitor.wrappedValue.start()
+    }
 
     var body: some Scene {
         WindowGroup {
             Group {
                 if onboardingComplete {
-                    ContentView(beaconMonitor: beaconMonitor)
+                    ContentView(beaconMonitor: beaconMonitor, centralTestMonitor: centralTestMonitor)
                 } else {
                     OnboardingView(onboardingComplete: $onboardingComplete)
                 }
